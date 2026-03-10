@@ -88,7 +88,7 @@ export default function DashboardPage() {
             <span className="block text-[10px] text-muted-foreground leading-none">タイムマシン</span>
           </a>
           <nav className="flex items-center gap-4 text-sm">
-            <Link href="/" className="text-muted-foreground hover:text-foreground">Archive</Link>
+            <Link href="/" className="text-muted-foreground hover:text-foreground">Home</Link>
             <Link href="/dashboard" className="font-medium">Dashboard</Link>
             <Link href="/settings" className="text-muted-foreground hover:text-foreground">Settings</Link>
           </nav>
