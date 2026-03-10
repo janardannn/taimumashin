@@ -61,18 +61,17 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
 
       return true;
     },
-    async jwt({ token, user }) {
-      if (user) {
-        // On first sign-in, look up the user ID from DB
+    async jwt({ token, user, trigger }) {
+      if (user || trigger === "update") {
         const { getPrisma } = await import("@/lib/db");
         const prisma = await getPrisma();
         const dbUser = await prisma.user.findUnique({
-          where: { email: user.email! },
-          select: { id: true, roleArn: true },
+          where: { email: (user?.email || token.email) as string },
+          select: { id: true, bucketName: true },
         });
         if (dbUser) {
           token.id = dbUser.id;
-          token.hasAwsConfig = !!dbUser.roleArn;
+          token.onboarded = !!dbUser.bucketName;
         }
       }
       return token;
@@ -80,6 +79,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     async session({ session, token }) {
       if (session.user) {
         session.user.id = token.id as string;
+        (session.user as Record<string, unknown>).onboarded = token.onboarded as boolean;
       }
       return session;
     },

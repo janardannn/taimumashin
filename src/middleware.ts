@@ -15,6 +15,21 @@ export default auth((req) => {
     return NextResponse.redirect(new URL("/login", req.url));
   }
 
+  // Logged in but not onboarded — force to /onboarding
+  const onboarded = (req.auth.user as Record<string, unknown>)?.onboarded;
+  const isOnboardingRoute = pathname === "/onboarding" || pathname.startsWith("/api/onboarding") || pathname.startsWith("/api/settings");
+  if (!onboarded && !isOnboardingRoute) {
+    if (pathname.startsWith("/api/")) {
+      return NextResponse.json({ error: "Onboarding not complete" }, { status: 403 });
+    }
+    return NextResponse.redirect(new URL("/onboarding", req.url));
+  }
+
+  // Already onboarded — don't let them go back to /onboarding
+  if (onboarded && pathname === "/onboarding") {
+    return NextResponse.redirect(new URL("/", req.url));
+  }
+
   return NextResponse.next();
 });
 
