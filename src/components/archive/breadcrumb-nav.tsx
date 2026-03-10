@@ -27,10 +27,10 @@ export function BreadcrumbNav({ path }: BreadcrumbNavProps) {
           <span key={href} className="flex items-center gap-1">
             <ChevronRight className="h-3.5 w-3.5" />
             {isLast ? (
-              <span className="font-medium text-foreground">{part}</span>
+              <span className="font-medium text-foreground">{decodeURIComponent(part)}</span>
             ) : (
               <Link href={href} className="hover:text-foreground transition-colors">
-                {part}
+                {decodeURIComponent(part)}
               </Link>
             )}
           </span>
