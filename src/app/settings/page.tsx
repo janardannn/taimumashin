@@ -25,6 +25,7 @@ const COST_TIERS = [
 ];
 
 const PREVIEW_RATIO = 0.08; // previews ≈ 8% of originals size
+const USD_TO_INR = 92;
 
 // ─── Preset defaults ─────────────────────────────────────────
 
@@ -105,7 +106,7 @@ export default function SettingsPage() {
             <span className="block text-[10px] text-muted-foreground leading-none">タイムマシン</span>
           </a>
           <nav className="flex items-center gap-4 text-sm">
-            <Link href="/" className="text-muted-foreground hover:text-foreground">Archive</Link>
+            <Link href="/" className="text-muted-foreground hover:text-foreground">Home</Link>
             <Link href="/dashboard" className="text-muted-foreground hover:text-foreground">Dashboard</Link>
             <Link href="/settings" className="font-medium">Settings</Link>
           </nav>
@@ -208,6 +209,9 @@ export default function SettingsPage() {
                         </td>
                         <td className="px-3 py-2 text-right font-semibold">
                           ${total < 0.01 ? total.toFixed(4) : total.toFixed(2)}
+                          <span className="block text-xs font-normal text-muted-foreground">
+                            {(() => { const inr = total * USD_TO_INR; return `~₹${inr < 1 ? inr.toFixed(2) : inr.toFixed(0)}`; })()}
+                          </span>
                         </td>
                       </tr>
                     );
@@ -219,7 +223,10 @@ export default function SettingsPage() {
               Previews estimated at ~8% of original data. Data transfer out is free under 100GB/month.
             </p>
             <p className="text-xs text-muted-foreground/60">
-              Pricing sourced from AWS Bulk Pricing API (Feb 2026). Rates may have changed since — check aws.amazon.com/s3/pricing for the latest.
+              Pricing sourced from AWS Bulk Pricing API (Mar 2026). Rates may have changed since — check aws.amazon.com/s3/pricing for the latest.
+            </p>
+            <p className="text-xs text-muted-foreground/60">
+              INR estimates use $1 = ₹{USD_TO_INR} (Mar 2026).
             </p>
           </section>
 
