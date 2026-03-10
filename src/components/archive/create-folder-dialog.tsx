@@ -63,7 +63,11 @@ export function CreateFolderDialog({ parentPath, onClose, onCreated }: CreateFol
             className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {error && (
+            <div className="rounded-md bg-red-100 px-4 py-3 text-sm font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
+              {error}
+            </div>
+          )}
 
           <button
             type="submit"
