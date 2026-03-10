@@ -70,6 +70,7 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
             fileName: relativePath,
             contentType: file.type || "application/octet-stream",
             folderPath,
+            lastModified: file.lastModified,
           }),
         });
 
@@ -78,13 +79,19 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
           throw new Error(data.error || `Upload failed (${res.status})`);
         }
 
-        const { url, previewUrl } = await res.json();
+        const { url, previewUrl, metaHeaders } = await res.json();
 
         // Upload directly to S3 via presigned PUT
         await new Promise<void>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open("PUT", url);
           xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+          // Set metadata headers so S3 stores the original file dates
+          if (metaHeaders) {
+            for (const [header, value] of Object.entries(metaHeaders)) {
+              xhr.setRequestHeader(header, value as string);
+            }
+          }
 
           xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
@@ -226,7 +233,9 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
             </div>
 
             {error && (
-              <p className="text-sm text-destructive">{error}</p>
+              <div className="rounded-md bg-red-100 px-4 py-3 text-sm font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
+                {error}
+              </div>
             )}
 
             <div className="flex gap-2">
