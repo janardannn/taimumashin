@@ -28,14 +28,14 @@ export default async function HomePage() {
             <span className="block text-[10px] text-muted-foreground leading-none">タイムマシン</span>
           </a>
           <nav className="flex items-center gap-4 text-sm">
-            <a href="/" className="font-medium">Archive</a>
+            <a href="/" className="font-medium">Home</a>
             <a href="/dashboard" className="text-muted-foreground hover:text-foreground">Dashboard</a>
             <a href="/settings" className="text-muted-foreground hover:text-foreground">Settings</a>
           </nav>
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-6">
+      <main className="mx-auto w-full max-w-7xl px-4 py-6 flex-1">
         <FileBrowser path="" />
       </main>
 

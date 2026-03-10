@@ -21,6 +21,7 @@ interface UploadFile {
 export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDialogProps) {
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState("");
 
   const processFileList = useCallback((fileList: FileList | File[]) => {
     const arr = Array.from(fileList);
@@ -52,6 +53,7 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
 
   async function uploadFiles() {
     setUploading(true);
+    setError("");
 
     for (let i = 0; i < files.length; i++) {
       const { file, relativePath } = files[i];
@@ -61,12 +63,6 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
       );
 
       try {
-        // Build the upload path preserving folder structure
-        const uploadPath = folderPath
-          ? `${folderPath}/${relativePath}`
-          : relativePath;
-
-        // For folder uploads, use the relative path as the file name/path
         const res = await fetch("/api/archive/upload", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -76,6 +72,11 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
             folderPath,
           }),
         });
+
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || `Upload failed (${res.status})`);
+        }
 
         const { url, previewUrl } = await res.json();
 
@@ -117,7 +118,9 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
         setFiles((prev) =>
           prev.map((f, j) => (j === i ? { ...f, status: "done", progress: 100 } : f))
         );
-      } catch {
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Upload failed";
+        setError(msg);
         setFiles((prev) =>
           prev.map((f, j) => (j === i ? { ...f, status: "error" } : f))
         );
@@ -125,7 +128,13 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
     }
 
     setUploading(false);
-    onUploadComplete();
+    // Only notify parent if at least one file succeeded
+    setFiles((prev) => {
+      if (prev.some((f) => f.status === "done")) {
+        onUploadComplete();
+      }
+      return prev;
+    });
   }
 
   const doneCount = files.filter((f) => f.status === "done").length;
@@ -215,6 +224,10 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
                 </div>
               ))}
             </div>
+
+            {error && (
+              <p className="text-sm text-destructive">{error}</p>
+            )}
 
             <div className="flex gap-2">
               <button
