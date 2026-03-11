@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Shield, Github, ExternalLink } from "lucide-react";
+import { KeyRound, Github, ExternalLink } from "lucide-react";
 
 const AWS_REGIONS = [
   { value: "ap-south-1", label: "Asia Pacific (Mumbai)" },
@@ -66,7 +66,7 @@ export default function OnboardingPage() {
         {/* BYOK Trust Section */}
         <div className="rounded-lg border bg-muted/30 p-4 space-y-3">
           <div className="flex items-start gap-3">
-            <Shield className="h-5 w-5 text-green-500 mt-0.5 shrink-0" />
+            <KeyRound className="h-5 w-5 text-green-500 mt-0.5 shrink-0" />
             <div className="space-y-1">
               <p className="text-sm font-medium">Bring Your Own Keys (BYOK)</p>
               <p className="text-xs text-muted-foreground">

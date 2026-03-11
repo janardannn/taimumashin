@@ -67,11 +67,11 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         const prisma = await getPrisma();
         const dbUser = await prisma.user.findUnique({
           where: { email: (user?.email || token.email) as string },
-          select: { id: true, bucketName: true },
+          select: { id: true, roleArn: true, bucketName: true },
         });
         if (dbUser) {
           token.id = dbUser.id;
-          token.onboarded = !!dbUser.bucketName;
+          token.onboarded = !!(dbUser.roleArn && dbUser.bucketName);
         }
       }
       return token;

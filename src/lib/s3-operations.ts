@@ -10,6 +10,8 @@ import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { getS3Client } from "@/lib/s3";
 
 export interface S3Config {
+  roleArn: string;
+  userId: string;
   bucketName: string;
   region: string;
 }
@@ -19,7 +21,7 @@ export async function listObjects(
   prefix: string,
   continuationToken?: string
 ) {
-  const client = getS3Client(config.region);
+  const client = await getS3Client(config.roleArn, config.userId, config.region);
 
   return client.send(
     new ListObjectsV2Command({
@@ -38,7 +40,7 @@ export async function generatePresignedPutUrl(
   contentType: string,
   metadata?: Record<string, string>
 ) {
-  const client = getS3Client(config.region);
+  const client = await getS3Client(config.roleArn, config.userId, config.region);
 
   return getSignedUrl(
     client,
@@ -58,7 +60,7 @@ export async function generatePresignedPutUrlStandard(
   key: string,
   contentType: string
 ) {
-  const client = getS3Client(config.region);
+  const client = await getS3Client(config.roleArn, config.userId, config.region);
 
   return getSignedUrl(
     client,
@@ -75,7 +77,7 @@ export async function generatePresignedGetUrl(
   config: S3Config,
   key: string
 ) {
-  const client = getS3Client(config.region);
+  const client = await getS3Client(config.roleArn, config.userId, config.region);
 
   return getSignedUrl(
     client,
@@ -88,7 +90,7 @@ export async function generatePresignedGetUrl(
 }
 
 export async function headObject(config: S3Config, key: string) {
-  const client = getS3Client(config.region);
+  const client = await getS3Client(config.roleArn, config.userId, config.region);
 
   return client.send(
     new HeadObjectCommand({
@@ -103,7 +105,7 @@ export async function restoreObject(
   key: string,
   days: number = 7
 ) {
-  const client = getS3Client(config.region);
+  const client = await getS3Client(config.roleArn, config.userId, config.region);
 
   return client.send(
     new RestoreObjectCommand({
@@ -118,7 +120,7 @@ export async function restoreObject(
 }
 
 export async function deleteObject(config: S3Config, key: string) {
-  const client = getS3Client(config.region);
+  const client = await getS3Client(config.roleArn, config.userId, config.region);
 
   return client.send(
     new DeleteObjectCommand({

@@ -1,6 +1,15 @@
 import { S3Client } from "@aws-sdk/client-s3";
+import { assumeRole } from "@/lib/aws";
 
-// Always uses local AWS credentials (from aws configure)
-export function getS3Client(region: string) {
-  return new S3Client({ region });
+export async function getS3Client(roleArn: string, userId: string, region: string) {
+  const credentials = await assumeRole(roleArn, userId);
+
+  return new S3Client({
+    region,
+    credentials: {
+      accessKeyId: credentials.accessKeyId,
+      secretAccessKey: credentials.secretAccessKey,
+      sessionToken: credentials.sessionToken,
+    },
+  });
 }

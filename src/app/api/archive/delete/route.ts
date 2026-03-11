@@ -38,7 +38,7 @@ export async function POST(req: Request) {
 
     // Delete a folder (all objects under prefix)
     if (prefix) {
-      const client = getS3Client(config.region);
+      const client = await getS3Client(config.roleArn, config.userId, config.region);
       let token: string | undefined;
       let deleted = 0;
 

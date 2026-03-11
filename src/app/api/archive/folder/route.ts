@@ -29,7 +29,7 @@ export async function POST(req: Request) {
   const path = `originals/${decodedParent ? decodedParent + "/" : ""}${decodedName}/`;
 
   try {
-    const client = getS3Client(config.region);
+    const client = await getS3Client(config.roleArn, config.userId, config.region);
     await client.send(
       new PutObjectCommand({
         Bucket: config.bucketName,

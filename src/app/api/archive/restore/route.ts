@@ -61,7 +61,7 @@ export async function POST(req: Request) {
         : "originals/";
 
       // Recursive listing (no delimiter) to find ALL files under this prefix
-      const client = getS3Client(config.region);
+      const client = await getS3Client(config.roleArn, config.userId, config.region);
       let token: string | undefined;
       let restored = 0;
       let skipped = 0;

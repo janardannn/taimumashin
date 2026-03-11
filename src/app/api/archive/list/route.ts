@@ -84,7 +84,7 @@ export async function GET(req: NextRequest) {
     );
 
     // Recursive stats
-    const client = getS3Client(config.region);
+    const client = await getS3Client(config.roleArn, config.userId, config.region);
     let totalFiles = 0;
     let totalSize = 0;
     let archivedCount = 0;
