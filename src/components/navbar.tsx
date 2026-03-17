@@ -12,9 +12,10 @@ interface NavbarProps {
     email?: string | null;
     image?: string | null;
   };
+  minimal?: boolean;
 }
 
-export function Navbar({ user }: NavbarProps) {
+export function Navbar({ user, minimal }: NavbarProps) {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -41,17 +42,19 @@ export function Navbar({ user }: NavbarProps) {
         </Link>
 
         <div className="flex items-center gap-4 text-sm">
-          <nav className="flex items-center gap-4">
-            <Link href="/" className={isActive("/")}>Home</Link>
-            <Link href="/dashboard" className={isActive("/dashboard")}>Dashboard</Link>
-          </nav>
+          {!minimal && (
+            <nav className="flex items-center gap-4">
+              <Link href="/" className={isActive("/")}>Home</Link>
+              <Link href="/dashboard" className={isActive("/dashboard")}>Dashboard</Link>
+            </nav>
+          )}
 
           {/* Profile dropdown */}
           {user && (
             <div className="relative" ref={dropdownRef}>
               <button
                 onClick={() => setOpen(!open)}
-                className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+                className="flex items-center gap-2 rounded-lg border px-2.5 py-1.5 bg-accent/50 hover:bg-accent transition-colors"
               >
                 {user.image ? (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -65,6 +68,9 @@ export function Navbar({ user }: NavbarProps) {
                     <User className="h-4 w-4 text-muted-foreground" />
                   </div>
                 )}
+                {user.name && (
+                  <span className="text-sm text-muted-foreground">{user.name}</span>
+                )}
               </button>
 
               {open && (
@@ -74,14 +80,16 @@ export function Navbar({ user }: NavbarProps) {
                     <p className="text-xs text-muted-foreground truncate">{user.email}</p>
                   </div>
                   <div className="p-1">
-                    <Link
-                      href="/settings"
-                      onClick={() => setOpen(false)}
-                      className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors"
-                    >
-                      <Settings className="h-4 w-4" />
-                      Settings
-                    </Link>
+                    {!minimal && (
+                      <Link
+                        href="/settings"
+                        onClick={() => setOpen(false)}
+                        className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors"
+                      >
+                        <Settings className="h-4 w-4" />
+                        Settings
+                      </Link>
+                    )}
                     <button
                       onClick={() => signOut({ callbackUrl: "/login" })}
                       className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-accent transition-colors text-destructive"

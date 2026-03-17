@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { Save } from "lucide-react";
+import { Cloud, Lock } from "lucide-react";
+// import { Save } from "lucide-react";
 
 const REGIONS = [
   { region: "ap-south-1",     label: "Asia Pacific (Mumbai)",    standardPerGB: 0.025,  glacierDeepPerGB: 0.002,   retrievalPerGB: 0.024 },
@@ -23,25 +24,25 @@ const COST_TIERS = [
 const PREVIEW_RATIO = 0.08;
 const USD_TO_INR = 92;
 
-const RESTORE_DAY_PRESETS = [1, 3, 5, 7, 10, 14];
-const LIFECYCLE_DAY_PRESETS = [1, 3, 5, 7, 14, 30];
-const PREVIEW_DURATION_OPTIONS = [10, 15, 20, 30, 45, 60, 90, 120, 180, 300];
+// const RESTORE_DAY_PRESETS = [1, 3, 5, 7, 10, 14];
+// const LIFECYCLE_DAY_PRESETS = [1, 3, 5, 7, 14, 30];
+// const PREVIEW_DURATION_OPTIONS = [10, 15, 20, 30, 45, 60, 90, 120, 180, 300];
 
 interface Settings {
   roleArn: string | null;
   bucketName: string | null;
   region: string | null;
-  notificationEmail: string | null;
-  restoreDays: number;
-  previewQuality: string;
-  previewDurationCap: number;
-  lifecycleDays: number;
+  // notificationEmail: string | null;
+  // restoreDays: number;
+  // previewQuality: string;
+  // previewDurationCap: number;
+  // lifecycleDays: number;
 }
 
 export function SettingsContent() {
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState("");
+  // const [saving, setSaving] = useState(false);
+  // const [message, setMessage] = useState("");
 
   useEffect(() => {
     fetch("/api/settings")
@@ -50,10 +51,11 @@ export function SettingsContent() {
   }, []);
 
   const selectedRegion = useMemo(
-    () => REGIONS.find((r) => r.region === (settings?.region || "ap-south-1")) || REGIONS[0],
+    () => REGIONS.find((r) => r.region === (settings?.region || "us-east-1")) || REGIONS[1],
     [settings?.region]
   );
 
+  /* TODO: Re-enable save when we have editable settings
   async function handleSave(e: React.FormEvent) {
     e.preventDefault();
     if (!settings) return;
@@ -80,6 +82,7 @@ export function SettingsContent() {
       setSaving(false);
     }
   }
+  */
 
   if (!settings) {
     return (
@@ -93,10 +96,41 @@ export function SettingsContent() {
     <>
       <h1 className="text-2xl font-bold mb-6">Settings</h1>
 
-      <form onSubmit={handleSave} className="space-y-8">
-        {/* AWS Connection */}
+      <div className="space-y-8">
+        {/* AWS Connection — read-only (locked to CloudFormation stack) */}
         <section className="space-y-4">
-          <h2 className="text-lg font-semibold">AWS Connection</h2>
+          <div className="flex items-center gap-2">
+            <Cloud className="h-5 w-5 text-muted-foreground" />
+            <h2 className="text-lg font-semibold">AWS Connection</h2>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            These values are set during onboarding and locked to your CloudFormation stack.
+          </p>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-muted-foreground">IAM Role ARN</label>
+              <div className="flex h-10 w-full items-center rounded-md border border-input bg-muted/30 px-3 text-sm text-muted-foreground">
+                <Lock className="mr-2 h-3.5 w-3.5 shrink-0" />
+                {settings.roleArn || "—"}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-muted-foreground">S3 Bucket Name</label>
+              <div className="flex h-10 w-full items-center rounded-md border border-input bg-muted/30 px-3 text-sm text-muted-foreground">
+                <Lock className="mr-2 h-3.5 w-3.5 shrink-0" />
+                {settings.bucketName || "—"}
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-muted-foreground">AWS Region</label>
+              <div className="flex h-10 w-full items-center rounded-md border border-input bg-muted/30 px-3 text-sm text-muted-foreground">
+                <Lock className="mr-2 h-3.5 w-3.5 shrink-0" />
+                {selectedRegion.label} ({selectedRegion.region})
+              </div>
+            </div>
+          </div>
+
+          {/* TODO: Re-enable editable AWS fields if we support reconnecting
           <div className="space-y-3">
             <div className="space-y-1.5">
               <label className="text-sm font-medium">IAM Role ARN</label>
@@ -119,7 +153,7 @@ export function SettingsContent() {
             <div className="space-y-1.5">
               <label className="text-sm font-medium">AWS Region</label>
               <select
-                value={settings.region || "ap-south-1"}
+                value={settings.region || "us-east-1"}
                 onChange={(e) => setSettings({ ...settings, region: e.target.value })}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
@@ -131,9 +165,10 @@ export function SettingsContent() {
               </select>
             </div>
           </div>
+          */}
         </section>
 
-        {/* Region Pricing + Cost Calculator */}
+        {/* Cost Estimate */}
         <section className="space-y-4">
           <h2 className="text-lg font-semibold">Cost Estimate</h2>
           <p className="text-sm text-muted-foreground">
@@ -201,11 +236,11 @@ export function SettingsContent() {
             Pricing sourced from AWS Bulk Pricing API (Mar 2026). Rates may have changed since — check aws.amazon.com/s3/pricing for the latest.
           </p>
           <p className="text-xs text-muted-foreground/60">
-            INR estimates use $1 = \u20B9{USD_TO_INR} (Mar 2026).
+            INR estimates use $1 = {"\u20B9"}{USD_TO_INR} (Mar 2026).
           </p>
         </section>
 
-        {/* Notifications */}
+        {/* TODO: Re-enable notifications section
         <section className="space-y-4">
           <h2 className="text-lg font-semibold">Notifications</h2>
           <div className="space-y-1.5">
@@ -219,8 +254,9 @@ export function SettingsContent() {
             />
           </div>
         </section>
+        */}
 
-        {/* Archive Preferences */}
+        {/* TODO: Re-enable archive preferences when Lambda reads from our API instead of env vars
         <section className="space-y-4">
           <h2 className="text-lg font-semibold">Archive Preferences</h2>
           <div className="grid gap-4 sm:grid-cols-2">
@@ -303,8 +339,9 @@ export function SettingsContent() {
             </div>
           </div>
         </section>
+        */}
 
-        {/* Save */}
+        {/* TODO: Re-enable save button when there are editable settings
         {message && (
           <div className={`rounded-md px-4 py-3 text-sm font-medium ${
             message.includes("saved")
@@ -322,7 +359,8 @@ export function SettingsContent() {
           <Save className="h-4 w-4" />
           {saving ? "Saving..." : "Save Settings"}
         </button>
-      </form>
+        */}
+      </div>
     </>
   );
 }
