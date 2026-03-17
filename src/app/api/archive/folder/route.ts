@@ -1,21 +1,14 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { getUserS3Config } from "@/lib/user-config";
-import { getS3Client } from "@/lib/s3";
-import { PutObjectCommand } from "@aws-sdk/client-s3";
+import { getPrisma } from "@/lib/db";
 
+// DB-only: S3 marker object creation is handled client-side via useS3 hook
 export async function POST(req: Request) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const result = await getUserS3Config();
-  if (!result) {
-    return NextResponse.json({ error: "AWS not configured" }, { status: 400 });
-  }
-
-  const { config } = result;
   const body = await req.json();
   const { name, parentPath } = body;
 
@@ -23,22 +16,25 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Folder name required" }, { status: 400 });
   }
 
-  // Use literal characters in S3 keys, never URL-encoded
   const decodedParent = parentPath ? decodeURIComponent(parentPath) : "";
   const decodedName = decodeURIComponent(name);
-  const path = `originals/${decodedParent ? decodedParent + "/" : ""}${decodedName}/`;
+  const folderPath = decodedParent ? `${decodedParent}/${decodedName}` : decodedName;
 
   try {
-    const client = await getS3Client(config.roleArn, config.userId, config.region);
-    await client.send(
-      new PutObjectCommand({
-        Bucket: config.bucketName,
-        Key: path,
-        Body: "",
-      })
-    );
+    const prisma = await getPrisma();
+    await prisma.folder.upsert({
+      where: {
+        userId_path: { userId: session.user.id, path: folderPath },
+      },
+      update: {},
+      create: {
+        userId: session.user.id,
+        name: decodedName,
+        path: folderPath,
+      },
+    });
 
-    return NextResponse.json({ success: true, path });
+    return NextResponse.json({ success: true });
   } catch (err) {
     console.error("Folder create error:", err);
     return NextResponse.json({ error: "Failed to create folder" }, { status: 500 });
