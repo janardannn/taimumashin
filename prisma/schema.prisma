@@ -92,8 +92,9 @@ model File {
   previewKey String?
   size       BigInt
   type       String
-  folderPath String
-  createdAt  DateTime @default(now())
+  folderPath   String
+  originalDate DateTime?
+  createdAt    DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
