@@ -2,41 +2,31 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   taimumashin — One-click deployment of user-side storage infrastructure.
   Creates an S3 bucket with Glacier Deep Archive lifecycle, a Lambda function
-  for preview generation and restore notifications, IAM cross-account role,
-  and SES email identity. Deploy this stack, then paste the RoleArn and
-  BucketName outputs into your taimumashin dashboard.
+  for preview generation and restore notifications, an IAM OIDC provider and
+  role for browser-based S3 access, and SES email identity. Deploy this stack,
+  then paste the RoleArn and BucketName outputs into your taimumashin dashboard.
 
 # =============================================================================
 # Parameters — collected from the user at deploy time
 # =============================================================================
 Parameters:
-  TaimumashinAccountId:
+  TaimumashinIssuerUrl:
     Type: String
-    AllowedPattern: "^[0-9]{12}$"
-    ConstraintDescription: Must be a 12-digit AWS account ID.
+    AllowedPattern: "^https?://.+"
+    ConstraintDescription: Must be an HTTP or HTTPS URL.
     Description: >
-      The AWS account ID of the taimumashin platform. This account will be
-      granted AssumeRole access so taimumashin can manage objects in your
-      bucket on your behalf.
-
-  ExternalId:
-    Type: String
-    MinLength: 8
-    MaxLength: 128
-    AllowedPattern: "^[a-zA-Z0-9_\\-]+$"
-    ConstraintDescription: Alphanumeric characters, hyphens, and underscores only (8-128 chars).
-    Description: >
-      A random string shared between you and taimumashin to prevent confused
-      deputy attacks. You will find this value in your taimumashin dashboard.
+      The taimumashin instance URL (OIDC issuer). This is used to establish
+      trust so your browser can get temporary S3 credentials. The platform
+      server never gets access to your bucket — only your browser does.
 
   WebhookUrl:
     Type: String
-    AllowedPattern: "^https://.+"
-    ConstraintDescription: Must be an HTTPS URL.
+    AllowedPattern: "^https?://.+"
+    ConstraintDescription: Must be an HTTP or HTTPS URL.
     Description: >
       Your taimumashin instance URL for webhook callbacks (e.g.
-      https://app.taimumashin.com/api/webhooks/aws). The Lambda function
-      POSTs restore-complete notifications here.
+      https://app.taimumashin.com/api/webhooks/restore-complete). The Lambda
+      function POSTs restore-complete notifications here.
 
   NotificationEmail:
     Type: String
@@ -130,12 +120,15 @@ Resources:
               - PUT
               - GET
               - HEAD
+              - DELETE
+              - POST
             AllowedHeaders:
               - "*"
             MaxAge: 3600
             ExposedHeaders:
               - ETag
               - x-amz-request-id
+              - x-amz-restore
       NotificationConfiguration:
         LambdaConfigurations:
           - Event: "s3:ObjectCreated:*"
@@ -172,18 +165,15 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # S3 read/write on the media bucket
+              # S3 read/write — wildcard to avoid circular dependency
               - Effect: Allow
                 Action:
                   - "s3:GetObject"
                   - "s3:PutObject"
                   - "s3:HeadObject"
                   - "s3:DeleteObject"
-                Resource: !Sub "arn:aws:s3:::${MediaBucket}/*"
-              - Effect: Allow
-                Action:
                   - "s3:ListBucket"
-                Resource: !Sub "arn:aws:s3:::${MediaBucket}"
+                Resource: "arn:aws:s3:::*"
               # SES email sending
               - Effect: Allow
                 Action:
@@ -206,6 +196,7 @@ Resources:
 
   # ---------------------------------------------------------------------------
   # Lambda Function — preview generation + restore notifications
+  # Downloads a static ffmpeg binary at cold start (no external layer needed)
   # ---------------------------------------------------------------------------
   PreviewLambda:
     Type: AWS::Lambda::Function
@@ -217,11 +208,10 @@ Resources:
       Runtime: python3.12
       Handler: index.handler
       Role: !GetAtt LambdaExecutionRole.Arn
-      MemorySize: 512
+      MemorySize: 1024
       Timeout: 900
-      Layers:
-        # Public ffmpeg layer — provides /opt/bin/ffmpeg and /opt/bin/ffprobe
-        - !Sub "arn:aws:lambda:${AWS::Region}:770693421928:layer:Ffmpeg:1"
+      EphemeralStorage:
+        Size: 2048
       Environment:
         Variables:
           WEBHOOK_URL: !Ref WebhookUrl
@@ -230,7 +220,6 @@ Resources:
           PREVIEW_HEIGHT: !FindInMap [ResolutionMap, !Ref PreviewQuality, Height]
           PREVIEW_QUALITY: !Ref PreviewQuality
           PREVIEW_DURATION_CAP: !Ref PreviewDurationCap
-          BUCKET_NAME: "WILL_BE_SET_BY_EVENT"
       Tags:
         - Key: Project
           Value: taimumashin
@@ -242,6 +231,8 @@ Resources:
           Handles two S3 event types:
             1. s3:ObjectCreated:* on originals/ — generates preview media
             2. s3:ObjectRestore:Completed — notifies webhook + sends email
+
+          ffmpeg is downloaded as a static binary at cold start and cached in /tmp.
           """
 
           import json
@@ -250,8 +241,10 @@ Resources:
           import tempfile
           import urllib.request
           import urllib.parse
+          import tarfile
           import math
           import logging
+          import stat
           from pathlib import Path
 
           import boto3
@@ -269,9 +262,40 @@ Resources:
           PREVIEW_HEIGHT = int(os.environ.get("PREVIEW_HEIGHT", "720"))
           PREVIEW_DURATION_CAP = int(os.environ.get("PREVIEW_DURATION_CAP", "60"))
 
-          # ffmpeg/ffprobe from the Lambda layer
-          FFPROBE = "/opt/bin/ffprobe"
-          FFMPEG = "/opt/bin/ffmpeg"
+          # ffmpeg paths — downloaded to /tmp at cold start
+          FFMPEG = "/tmp/ffmpeg"
+          FFPROBE = "/tmp/ffprobe"
+
+          # Static ffmpeg build (John Van Sickle — stable URL, linux amd64)
+          FFMPEG_URL = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+
+
+          def ensure_ffmpeg():
+              """Download static ffmpeg to /tmp if not already cached."""
+              if os.path.isfile(FFMPEG) and os.path.isfile(FFPROBE):
+                  return True
+              try:
+                  logger.info("Downloading static ffmpeg from %s", FFMPEG_URL)
+                  archive_path = "/tmp/ffmpeg.tar.xz"
+                  urllib.request.urlretrieve(FFMPEG_URL, archive_path)
+                  with tarfile.open(archive_path, "r:xz") as tar:
+                      for member in tar.getmembers():
+                          name = os.path.basename(member.name)
+                          if name in ("ffmpeg", "ffprobe"):
+                              member.name = name
+                              tar.extract(member, "/tmp")
+                  os.chmod(FFMPEG, os.stat(FFMPEG).st_mode | stat.S_IEXEC)
+                  os.chmod(FFPROBE, os.stat(FFPROBE).st_mode | stat.S_IEXEC)
+                  os.remove(archive_path)
+                  logger.info("ffmpeg installed to /tmp")
+                  return True
+              except Exception as exc:
+                  logger.error("Failed to download ffmpeg: %s", exc)
+                  return False
+
+
+          # Warm up on cold start
+          HAS_FFMPEG = ensure_ffmpeg()
 
           # File extension categories
           VIDEO_EXTENSIONS = {
@@ -296,7 +320,6 @@ Resources:
                   if "ObjectRestore:Completed" in event_name:
                       handle_restore_complete(bucket, key, record)
                   elif "ObjectCreated" in event_name:
-                      # Only process originals — skip previews to avoid loops
                       if key.startswith("originals/"):
                           handle_object_created(bucket, key)
                       else:
@@ -311,6 +334,10 @@ Resources:
 
           def handle_object_created(bucket, key):
               """Download the original file, generate a preview, upload it."""
+              if not HAS_FFMPEG:
+                  logger.error("ffmpeg not available — cannot generate preview for %s", key)
+                  return
+
               ext = Path(key).suffix.lower()
 
               if ext in VIDEO_EXTENSIONS:
@@ -322,23 +349,14 @@ Resources:
 
 
           def generate_video_preview(bucket, key):
-              """
-              Generate a preview video:
-                1. Probe original duration with ffprobe
-                2. Calculate evenly spaced sample points
-                3. Extract segments totalling ~10%% of duration (capped)
-                4. Concatenate and encode to WebM at configured resolution
-                5. Upload to previews/ prefix
-              """
-              with tempfile.TemporaryDirectory() as tmpdir:
+              """Generate a preview video sampled evenly across the source."""
+              with tempfile.TemporaryDirectory(dir="/tmp") as tmpdir:
                   input_path = os.path.join(tmpdir, "input" + Path(key).suffix)
                   output_path = os.path.join(tmpdir, "preview.webm")
 
-                  # Download original
                   logger.info("Downloading s3://%s/%s", bucket, key)
                   s3.download_file(bucket, key, input_path)
 
-                  # Probe duration
                   duration = probe_duration(input_path)
                   if duration is None or duration <= 0:
                       logger.error("Could not determine duration for %s", key)
@@ -346,29 +364,24 @@ Resources:
 
                   logger.info("Source duration: %.2fs", duration)
 
-                  # Calculate sample plan
                   target_duration = min(duration * 0.10, PREVIEW_DURATION_CAP)
                   if target_duration < 1:
                       target_duration = min(duration, PREVIEW_DURATION_CAP)
 
-                  # Decide number of segments (aim for ~5s each, at least 1)
                   segment_length = 5.0
                   num_segments = max(1, int(math.ceil(target_duration / segment_length)))
                   segment_length = target_duration / num_segments
 
-                  # Evenly space start points across the video
                   if num_segments == 1:
                       start_points = [0.0]
                   else:
                       spacing = duration / num_segments
                       start_points = [i * spacing for i in range(num_segments)]
 
-                  # Make sure no segment exceeds the source boundary
                   start_points = [
                       sp for sp in start_points
                       if sp + segment_length <= duration + 0.5
                   ]
-
                   if not start_points:
                       start_points = [0.0]
 
@@ -378,13 +391,10 @@ Resources:
                       len(start_points) * segment_length,
                   )
 
-                  # Build ffmpeg filter to select and concatenate segments
-                  # Use the select filter with between() for each segment
                   select_expr = "+".join(
                       f"between(t\\,{sp:.2f}\\,{sp + segment_length:.2f})"
                       for sp in start_points
                   )
-
                   scale_filter = (
                       f"scale={PREVIEW_WIDTH}:{PREVIEW_HEIGHT}"
                       f":force_original_aspect_ratio=decrease,"
@@ -396,36 +406,26 @@ Resources:
                       "-i", input_path,
                       "-vf", f"select='{select_expr}',setpts=N/FRAME_RATE/TB,{scale_filter}",
                       "-af", f"aselect='{select_expr}',asetpts=N/SR/TB",
-                      "-c:v", "libvpx-vp9",
-                      "-b:v", "1M",
-                      "-c:a", "libopus",
-                      "-b:a", "128k",
+                      "-c:v", "libvpx-vp9", "-b:v", "1M",
+                      "-c:a", "libopus", "-b:a", "128k",
                       "-t", str(target_duration + 1),
                       "-threads", "2",
                       output_path,
                   ]
 
                   logger.info("Running ffmpeg: %s", " ".join(cmd))
-                  result = subprocess.run(
-                      cmd,
-                      capture_output=True,
-                      text=True,
-                      timeout=840,  # 14 min safety margin within 15 min Lambda timeout
-                  )
+                  result = subprocess.run(cmd, capture_output=True, text=True, timeout=840)
 
                   if result.returncode != 0:
                       logger.error("ffmpeg stderr: %s", result.stderr[-2000:])
                       raise RuntimeError(f"ffmpeg failed with code {result.returncode}")
 
-                  # Upload preview
                   preview_key = key.replace("originals/", "previews/", 1)
                   preview_key = str(Path(preview_key).with_suffix(".webm"))
 
                   logger.info("Uploading preview to s3://%s/%s", bucket, preview_key)
                   s3.upload_file(
-                      output_path,
-                      bucket,
-                      preview_key,
+                      output_path, bucket, preview_key,
                       ExtraArgs={
                           "ContentType": "video/webm",
                           "Metadata": {
@@ -438,63 +438,32 @@ Resources:
 
 
           def generate_image_thumbnail(bucket, key):
-              """
-              Generate a 300px-wide JPEG thumbnail using PIL.
-              Pillow is available in the Python 3.12 Lambda runtime via the
-              standard image processing libraries.
-              """
-              with tempfile.TemporaryDirectory() as tmpdir:
+              """Generate a 300px-wide JPEG thumbnail."""
+              with tempfile.TemporaryDirectory(dir="/tmp") as tmpdir:
                   input_path = os.path.join(tmpdir, "input" + Path(key).suffix)
                   output_path = os.path.join(tmpdir, "thumbnail.jpg")
 
-                  # Download original
                   logger.info("Downloading s3://%s/%s for thumbnail", bucket, key)
                   s3.download_file(bucket, key, input_path)
 
-                  try:
-                      from PIL import Image
+                  cmd = [
+                      FFMPEG, "-y",
+                      "-i", input_path,
+                      "-vf", "scale=300:-1",
+                      "-frames:v", "1", "-q:v", "3",
+                      output_path,
+                  ]
+                  result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+                  if result.returncode != 0:
+                      logger.error("ffmpeg thumbnail stderr: %s", result.stderr[-1000:])
+                      raise RuntimeError(f"ffmpeg thumbnail failed with code {result.returncode}")
 
-                      with Image.open(input_path) as img:
-                          # Convert to RGB if necessary (handles RGBA, palette, etc.)
-                          if img.mode not in ("RGB", "L"):
-                              img = img.convert("RGB")
-
-                          # Calculate height to maintain aspect ratio
-                          target_width = 300
-                          aspect_ratio = img.height / img.width
-                          target_height = int(target_width * aspect_ratio)
-
-                          img = img.resize(
-                              (target_width, target_height),
-                              Image.LANCZOS,
-                          )
-                          img.save(output_path, "JPEG", quality=85, optimize=True)
-
-                  except ImportError:
-                      # Fallback: use ffmpeg for image thumbnailing if Pillow unavailable
-                      logger.warning("Pillow not available, falling back to ffmpeg for thumbnail.")
-                      cmd = [
-                          FFMPEG, "-y",
-                          "-i", input_path,
-                          "-vf", "scale=300:-1",
-                          "-frames:v", "1",
-                          "-q:v", "3",
-                          output_path,
-                      ]
-                      result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                      if result.returncode != 0:
-                          logger.error("ffmpeg thumbnail stderr: %s", result.stderr[-1000:])
-                          raise RuntimeError(f"ffmpeg thumbnail failed with code {result.returncode}")
-
-                  # Upload thumbnail
                   preview_key = key.replace("originals/", "previews/", 1)
                   preview_key = str(Path(preview_key).with_suffix(".jpg"))
 
                   logger.info("Uploading thumbnail to s3://%s/%s", bucket, preview_key)
                   s3.upload_file(
-                      output_path,
-                      bucket,
-                      preview_key,
+                      output_path, bucket, preview_key,
                       ExtraArgs={
                           "ContentType": "image/jpeg",
                           "Metadata": {"source-key": key},
@@ -506,10 +475,8 @@ Resources:
           def probe_duration(file_path):
               """Use ffprobe to get video duration in seconds."""
               cmd = [
-                  FFPROBE,
-                  "-v", "quiet",
-                  "-print_format", "json",
-                  "-show_format",
+                  FFPROBE, "-v", "quiet",
+                  "-print_format", "json", "-show_format",
                   file_path,
               ]
               try:
@@ -529,31 +496,22 @@ Resources:
           # =====================================================================
 
           def handle_restore_complete(bucket, key, record):
-              """
-              When a Glacier restore completes:
-                1. POST to the taimumashin webhook with restore details
-                2. Send a notification email via SES
-              """
-              # Extract metadata from the restored object
+              """POST to webhook + send SES email on Glacier restore completion."""
               try:
                   head = s3.head_object(Bucket=bucket, Key=key)
                   metadata = head.get("Metadata", {})
                   user_id = metadata.get("user-id", "unknown")
                   folder_path = metadata.get("folder-path", key)
-
-                  # Restore expiry from the Restore header
                   restore_header = head.get("Restore", "")
                   expires_at = ""
                   if 'expiry-date="' in restore_header:
                       expires_at = restore_header.split('expiry-date="')[1].split('"')[0]
-
               except Exception as exc:
                   logger.error("Failed to head object %s/%s: %s", bucket, key, exc)
                   user_id = "unknown"
                   folder_path = key
                   expires_at = ""
 
-              # --- Webhook POST ---
               payload = json.dumps({
                   "event": "restore.completed",
                   "bucket": bucket,
@@ -565,23 +523,17 @@ Resources:
               }).encode("utf-8")
 
               req = urllib.request.Request(
-                  WEBHOOK_URL,
-                  data=payload,
+                  WEBHOOK_URL, data=payload,
                   headers={"Content-Type": "application/json"},
                   method="POST",
               )
-
               try:
                   with urllib.request.urlopen(req, timeout=15) as resp:
-                      logger.info(
-                          "Webhook response: %d %s",
-                          resp.status,
-                          resp.read(256).decode("utf-8", errors="replace"),
-                      )
+                      logger.info("Webhook response: %d %s", resp.status,
+                          resp.read(256).decode("utf-8", errors="replace"))
               except Exception as exc:
                   logger.error("Webhook POST failed: %s", exc)
 
-              # --- SES Email ---
               if NOTIFICATION_EMAIL:
                   try:
                       file_name = Path(key).name
@@ -589,20 +541,12 @@ Resources:
                           Source=NOTIFICATION_EMAIL,
                           Destination={"ToAddresses": [NOTIFICATION_EMAIL]},
                           Message={
-                              "Subject": {
-                                  "Data": f"[taimumashin] Restore complete: {file_name}",
-                              },
-                              "Body": {
-                                  "Text": {
-                                      "Data": (
-                                          f"Your file has been restored from Glacier Deep Archive.\n\n"
-                                          f"File: {key}\n"
-                                          f"Bucket: {bucket}\n"
-                                          f"Expires: {expires_at}\n\n"
-                                          f"You can now download this file from your taimumashin dashboard.\n"
-                                      ),
-                                  },
-                              },
+                              "Subject": {"Data": f"[taimumashin] Restore complete: {file_name}"},
+                              "Body": {"Text": {"Data": (
+                                  f"Your file has been restored from Glacier Deep Archive.\n\n"
+                                  f"File: {key}\nBucket: {bucket}\nExpires: {expires_at}\n\n"
+                                  f"You can now download this file from your taimumashin dashboard.\n"
+                              )}},
                           },
                       )
                       logger.info("Notification email sent to %s", NOTIFICATION_EMAIL)
@@ -633,9 +577,28 @@ Resources:
           Value: taimumashin
 
   # ---------------------------------------------------------------------------
-  # IAM Role — cross-account role for taimumashin platform to AssumeRole
+  # OIDC Provider — trusts JWTs signed by the taimumashin instance
   # ---------------------------------------------------------------------------
-  TaimumashinCrossAccountRole:
+  OidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: !Ref TaimumashinIssuerUrl
+      ClientIdList:
+        - "sts.amazonaws.com"
+      # AWS fetches the JWKS from TaimumashinIssuerUrl/.well-known/jwks.json
+      # and validates the TLS certificate automatically.
+      # ThumbprintList is required by CloudFormation but AWS ignores it for
+      # HTTPS issuers and validates the full certificate chain instead.
+      ThumbprintList:
+        - "0000000000000000000000000000000000000000"
+      Tags:
+        - Key: Project
+          Value: taimumashin
+
+  # ---------------------------------------------------------------------------
+  # IAM Role — browser assumes this via AssumeRoleWithWebIdentity (OIDC)
+  # ---------------------------------------------------------------------------
+  TaimumashinBrowserRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub "taimumashin-access-${AWS::StackName}"
@@ -644,11 +607,9 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              AWS: !Sub "arn:aws:iam::${TaimumashinAccountId}:root"
-            Action: "sts:AssumeRole"
-            Condition:
-              StringEquals:
-                "sts:ExternalId": !Ref ExternalId
+              Federated: !GetAtt OidcProvider.Arn
+            Action: "sts:AssumeRoleWithWebIdentity"
+            # Audience is already constrained by the OIDC provider's ClientIdList
       MaxSessionDuration: 3600
       Policies:
         - PolicyName: TaimumashinBucketAccess
@@ -687,24 +648,24 @@ Resources:
 Outputs:
   RoleArn:
     Description: >
-      ARN of the cross-account IAM role. Paste this into your taimumashin
-      dashboard under Settings > AWS Integration > Role ARN.
-    Value: !GetAtt TaimumashinCrossAccountRole.Arn
+      ARN of the OIDC IAM role. Paste this into your taimumashin
+      dashboard during onboarding.
+    Value: !GetAtt TaimumashinBrowserRole.Arn
     Export:
       Name: !Sub "${AWS::StackName}-RoleArn"
 
   BucketName:
     Description: >
       Name of the S3 bucket created for your media. Paste this into your
-      taimumashin dashboard under Settings > AWS Integration > Bucket Name.
+      taimumashin dashboard during onboarding.
     Value: !Ref MediaBucket
     Export:
       Name: !Sub "${AWS::StackName}-BucketName"
 
   Region:
     Description: >
-      AWS region where this stack is deployed. Paste this into your
-      taimumashin dashboard under Settings > AWS Integration > Region.
+      AWS region where this stack is deployed. Select the matching region
+      in your taimumashin dashboard during onboarding.
     Value: !Ref "AWS::Region"
     Export:
       Name: !Sub "${AWS::StackName}-Region"
