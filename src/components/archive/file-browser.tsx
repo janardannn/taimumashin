@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { FolderPlus, Upload, RefreshCw } from "lucide-react";
+import { FolderPlus, Upload, RefreshCw, Zap } from "lucide-react";
 import { FolderCard } from "./folder-card";
 import { FileCard } from "./file-card";
 import { FileViewer } from "./file-viewer";
@@ -10,6 +10,7 @@ import { UploadDialog } from "./upload-dialog";
 import { CreateFolderDialog } from "./create-folder-dialog";
 import { BreadcrumbNav } from "./breadcrumb-nav";
 import { FolderStatusBar } from "./folder-status-bar";
+import { useS3 } from "@/hooks/use-s3";
 
 interface S3Folder {
   name: string;
@@ -23,9 +24,8 @@ interface S3File {
   size: number;
   lastModified?: string;
   storageClass?: string;
-  restoreStatus?: string | null;
-  restoreExpiresAt?: string | null;
   previewUrl?: string | null;
+  previewKey?: string | null;
 }
 
 type BrowseItem =
@@ -59,7 +59,6 @@ function groupByDate(folders: S3Folder[], files: S3File[]): DateGroup[] {
     items.push({ type: "file", data: f, date });
   }
 
-  // Group into buckets
   const bucketMap = new Map<string, BrowseItem[]>();
   const bucketOrder: string[] = [];
 
@@ -72,14 +71,12 @@ function groupByDate(folders: S3Folder[], files: S3File[]): DateGroup[] {
     bucketMap.get(label)!.push(item);
   }
 
-  // Sort buckets by most recent item date (newest first)
   bucketOrder.sort((a, b) => {
     const aMax = Math.max(...(bucketMap.get(a)?.map((i) => i.date) || [0]));
     const bMax = Math.max(...(bucketMap.get(b)?.map((i) => i.date) || [0]));
     return bMax - aMax;
   });
 
-  // Within each bucket: folders first (desc by date), then files (desc by date)
   return bucketOrder.map((label) => {
     const group = bucketMap.get(label)!;
     const groupFolders = group.filter((i) => i.type === "folder").sort((a, b) => b.date - a.date);
@@ -90,6 +87,7 @@ function groupByDate(folders: S3Folder[], files: S3File[]): DateGroup[] {
 
 export function FileBrowser({ path }: FileBrowserProps) {
   const router = useRouter();
+  const s3 = useS3();
   const [folders, setFolders] = useState<S3Folder[]>([]);
   const [files, setFiles] = useState<S3File[]>([]);
   const [stats, setStats] = useState({ totalFiles: 0, totalSize: 0, archivedCount: 0, availableCount: 0 });
@@ -99,44 +97,101 @@ export function FileBrowser({ path }: FileBrowserProps) {
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [error, setError] = useState("");
 
-  // Selection state
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-
-  // File viewer state
   const [viewingFile, setViewingFile] = useState<S3File | null>(null);
 
-  const s3Prefix = path ? `originals/${path}/` : "originals/";
+  const decodedPath = decodeURIComponent(path);
+  const isInstantPath = decodedPath === "instant" || decodedPath.startsWith("instant/");
 
+  // Load folder contents from DB
   const loadContents = useCallback(async () => {
     setLoading(true);
     setError("");
+
     try {
-      const res = await fetch(`/api/archive/list?prefix=${encodeURIComponent(s3Prefix)}`);
-      const data = await res.json();
+      const res = await fetch(`/api/archive/browse?path=${encodeURIComponent(decodedPath)}`);
       if (!res.ok) {
-        setError(data.error || "Failed to load files");
-        return;
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Failed to load contents");
       }
-      setFolders(data.folders || []);
-      setFiles(data.files || []);
-      setStats(data.stats || { totalFiles: 0, totalSize: 0, archivedCount: 0, availableCount: 0 });
-      setRestoreStatus(data.restoreStatus || null);
+      const data = await res.json();
+
+      const folderResults: S3Folder[] = data.folders.map((f: { name: string; path: string; createdAt: string }) => ({
+        name: f.name,
+        prefix: isInstantPath ? `instant/${f.path.replace(/^instant\/?/, "")}/` : `originals/${f.path}/`,
+        lastModified: f.createdAt,
+      }));
+
+      const fileResults: S3File[] = data.files.map((f: { name: string; s3Key: string; previewKey: string | null; size: number; type: string; originalDate: string | null; createdAt: string }) => ({
+        name: f.name,
+        key: f.s3Key,
+        size: f.size,
+        lastModified: f.originalDate || f.createdAt,
+        storageClass: isInstantPath ? "STANDARD" : "DEEP_ARCHIVE",
+        previewUrl: null,
+        previewKey: f.previewKey,
+      }));
+
+      setFolders(folderResults);
+      setFiles(fileResults);
+      setStats(data.stats);
+      setRestoreStatus(data.restoreStatus);
     } catch (err) {
       console.error("Failed to load contents:", err);
       setError("Failed to load files. Check your connection.");
     } finally {
       setLoading(false);
     }
-  }, [s3Prefix]);
+  }, [decodedPath, isInstantPath]);
 
+  // Load contents on path change
   useEffect(() => {
     loadContents();
   }, [loadContents]);
 
+  // Lazy-load preview URLs via S3 presigned URLs
+  const previewLoadedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!s3.ready || files.length === 0) return;
+
+    let cancelled = false;
+
+    async function loadPreviews() {
+      for (const file of files) {
+        if (cancelled) break;
+        if (previewLoadedRef.current.has(file.key)) continue;
+
+        const keyToPresign = isInstantPath ? file.key : file.previewKey;
+        if (!keyToPresign) continue;
+
+        previewLoadedRef.current.add(file.key);
+
+        try {
+          const url = await s3.getPresignedUrl(keyToPresign);
+          if (!cancelled) {
+            setFiles((prev) =>
+              prev.map((f) => (f.key === file.key ? { ...f, previewUrl: url } : f))
+            );
+          }
+        } catch {
+          // no preview available
+        }
+      }
+    }
+
+    loadPreviews();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run when s3 ready or files change
+  }, [s3.ready, files.length, isInstantPath]);
+
+  // Reset preview cache when path changes
+  useEffect(() => {
+    previewLoadedRef.current.clear();
+  }, [decodedPath]);
+
   const dateGroups = useMemo(() => groupByDate(folders, files), [folders, files]);
 
-  // Clear selection when clicking empty area
   const handleBackgroundClick = useCallback(() => {
     setSelectedFolder(null);
     setSelectedFile(null);
@@ -148,8 +203,12 @@ export function FileBrowser({ path }: FileBrowserProps) {
   }, []);
 
   const handleFolderDoubleClick = useCallback((prefix: string) => {
-    const urlPath = prefix.replace(/^originals\//, "").replace(/\/$/, "");
-    router.push(`/${urlPath}`);
+    const urlPath = prefix.replace(/^(originals|instant)\//, "").replace(/\/$/, "");
+    if (prefix.startsWith("instant/")) {
+      router.push(`/instant/${urlPath}`);
+    } else {
+      router.push(`/${urlPath}`);
+    }
   }, [router]);
 
   const handleFileClick = useCallback((key: string) => {
@@ -161,7 +220,6 @@ export function FileBrowser({ path }: FileBrowserProps) {
     setViewingFile(file);
   }, []);
 
-  // Build selection object for status bar
   const selection = useMemo(() => {
     if (selectedFile) {
       const file = files.find((f) => f.key === selectedFile);
@@ -182,7 +240,6 @@ export function FileBrowser({ path }: FileBrowserProps) {
 
   return (
     <div className="space-y-4" onClick={handleBackgroundClick}>
-      {/* Header */}
       <div className="flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
         <BreadcrumbNav path={path} />
         <div className="flex items-center gap-2">
@@ -210,14 +267,12 @@ export function FileBrowser({ path }: FileBrowserProps) {
         </div>
       </div>
 
-      {/* Error */}
-      {error && (
+      {(error || s3.error) && (
         <div className="rounded-md bg-red-100 px-4 py-3 text-sm font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
-          {error}
+          {error || s3.error}
         </div>
       )}
 
-      {/* Content */}
       {loading ? (
         <div className="flex items-center justify-center py-20">
           <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -235,19 +290,31 @@ export function FileBrowser({ path }: FileBrowserProps) {
         </div>
       ) : (
         <>
-          {/* Status bar */}
+          {!path && (
+            <button
+              onClick={() => router.push("/instant")}
+              className="flex w-full items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-left transition-colors hover:bg-amber-500/20"
+            >
+              <Zap className="h-5 w-5 text-amber-500 shrink-0" />
+              <div>
+                <p className="text-sm font-semibold">Instant</p>
+                <p className="text-xs text-muted-foreground">Always available — no archiving, no restore wait</p>
+              </div>
+            </button>
+          )}
+
           <div onClick={(e) => e.stopPropagation()}>
             <FolderStatusBar
-              folderPath={path}
+              folderPath={decodedPath}
               stats={stats}
-              restoreStatus={restoreStatus}
+              restoreStatus={isInstantPath ? null : restoreStatus}
               selection={selection}
               onRestoreComplete={loadContents}
               onDeleteComplete={handleDeleteComplete}
+              isInstant={isInstantPath}
             />
           </div>
 
-          {/* Date-grouped content */}
           {dateGroups.map((group) => {
             const groupFolders = group.items.filter((i) => i.type === "folder");
             const groupFiles = group.items.filter((i) => i.type === "file");
@@ -295,7 +362,6 @@ export function FileBrowser({ path }: FileBrowserProps) {
         </>
       )}
 
-      {/* File viewer */}
       {viewingFile && (
         <FileViewer
           file={viewingFile}
@@ -303,10 +369,9 @@ export function FileBrowser({ path }: FileBrowserProps) {
         />
       )}
 
-      {/* Dialogs */}
       {showUpload && (
         <UploadDialog
-          folderPath={path}
+          folderPath={decodedPath}
           onClose={() => setShowUpload(false)}
           onUploadComplete={() => {
             setShowUpload(false);
@@ -316,7 +381,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
       )}
       {showNewFolder && (
         <CreateFolderDialog
-          parentPath={path}
+          parentPath={decodedPath}
           onClose={() => setShowNewFolder(false)}
           onCreated={loadContents}
         />
