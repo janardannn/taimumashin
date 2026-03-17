@@ -4,7 +4,10 @@ import { NextResponse } from "next/server";
 export default auth((req) => {
   const { pathname } = req.nextUrl;
 
-  const isPublic = pathname === "/login" || pathname.startsWith("/api/auth");
+  const isPublic = pathname === "/login"
+    || pathname.startsWith("/api/auth")
+    || pathname.startsWith("/.well-known")
+    || pathname.startsWith("/api/webhooks");
   if (isPublic) return NextResponse.next();
 
   // Not logged in — redirect pages to /login, return 401 for APIs
@@ -16,7 +19,7 @@ export default auth((req) => {
   }
 
   // Logged in but not onboarded — force to /onboarding
-  const onboarded = (req.auth.user as Record<string, unknown>)?.onboarded;
+  const onboarded = (req.auth.user as unknown as Record<string, unknown>)?.onboarded;
   const isOnboardingRoute = pathname === "/onboarding" || pathname.startsWith("/api/onboarding") || pathname.startsWith("/api/settings");
   if (!onboarded && !isOnboardingRoute) {
     if (pathname.startsWith("/api/")) {
