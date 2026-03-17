@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { X } from "lucide-react";
+import { useS3 } from "@/hooks/use-s3";
 
 interface CreateFolderDialogProps {
   parentPath: string;
@@ -13,6 +14,7 @@ export function CreateFolderDialog({ parentPath, onClose, onCreated }: CreateFol
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const s3 = useS3();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -22,10 +24,22 @@ export function CreateFolderDialog({ parentPath, onClose, onCreated }: CreateFol
     setError("");
 
     try {
+      const trimmedName = name.trim();
+
+      // Build the S3 marker key (mirrors server-side logic)
+      const isInstant = parentPath === "instant" || parentPath.startsWith("instant/");
+      const prefix = isInstant ? "instant" : "originals";
+      const subPath = isInstant ? parentPath.replace(/^instant\/?/, "") : parentPath;
+      const markerKey = `${prefix}/${subPath ? subPath + "/" : ""}${trimmedName}/`;
+
+      // Create S3 folder marker directly from the client
+      await s3.putObject(markerKey, "", "application/x-directory");
+
+      // Track in DB via server route (server will skip S3 operations)
       const res = await fetch("/api/archive/folder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), parentPath }),
+        body: JSON.stringify({ name: trimmedName, parentPath }),
       });
 
       if (!res.ok) {
@@ -71,7 +85,7 @@ export function CreateFolderDialog({ parentPath, onClose, onCreated }: CreateFol
 
           <button
             type="submit"
-            disabled={loading || !name.trim()}
+            disabled={loading || !name.trim() || !s3.ready}
             className="w-full rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {loading ? "Creating..." : "Create Folder"}

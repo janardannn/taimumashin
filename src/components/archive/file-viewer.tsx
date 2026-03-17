@@ -3,6 +3,7 @@
 import { useEffect, useCallback, useState } from "react";
 import { X, Download, FileText, File as FileIcon, Snowflake, Sun } from "lucide-react";
 import { formatFileSize, getFileType, formatDate } from "@/lib/file-utils";
+import { useS3 } from "@/hooks/use-s3";
 
 interface FileViewerProps {
   file: {
@@ -22,34 +23,82 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
   const [viewUrl, setViewUrl] = useState<string | null>(null);
   const [source, setSource] = useState<ViewSource>(null);
   const [loading, setLoading] = useState(true);
+  const s3 = useS3();
 
   useEffect(() => {
-    async function fetchUrl() {
+    if (!s3.ready) return;
+
+    let cancelled = false;
+
+    async function resolve() {
       setLoading(true);
       try {
-        const res = await fetch(`/api/archive/view?key=${encodeURIComponent(file.key)}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.url) {
-            setViewUrl(data.url);
-            setSource(data.source as ViewSource);
+        // instant/ files are always directly accessible
+        if (file.key.startsWith("instant/")) {
+          const url = await s3.getPresignedUrl(file.key);
+          if (!cancelled) {
+            setViewUrl(url);
+            setSource("original");
             setLoading(false);
-            return;
           }
+          return;
+        }
+
+        // originals/ files — check storage class & restore status
+        const head = await s3.headObject(file.key);
+        const storageClass = head.StorageClass ?? "STANDARD";
+        const isArchived = storageClass === "DEEP_ARCHIVE" || storageClass === "GLACIER";
+        const isRestored = head.Restore
+          ? head.Restore.includes('ongoing-request="false"')
+          : false;
+
+        if (!isArchived || isRestored) {
+          // Object is available — serve the original
+          const url = await s3.getPresignedUrl(file.key);
+          if (!cancelled) {
+            setViewUrl(url);
+            setSource("original");
+            setLoading(false);
+          }
+          return;
+        }
+
+        // Archived and not yet restored — try the preview copy
+        const previewKey = file.key.replace(/^originals\//, "previews/");
+        try {
+          const url = await s3.getPresignedUrl(previewKey);
+          if (!cancelled) {
+            setViewUrl(url);
+            setSource("preview");
+            setLoading(false);
+          }
+          return;
+        } catch {
+          // No preview available either
+        }
+
+        if (!cancelled) {
+          setViewUrl(null);
+          setSource(null);
+          setLoading(false);
         }
       } catch {
-        // Fall through to preview
+        if (!cancelled) {
+          // Last-resort fallback: use a previewUrl if the caller provided one
+          if (file.previewUrl) {
+            setViewUrl(file.previewUrl);
+            setSource("preview");
+          }
+          setLoading(false);
+        }
       }
-
-      if (file.previewUrl) {
-        setViewUrl(file.previewUrl);
-        setSource("preview");
-      }
-      setLoading(false);
     }
 
-    fetchUrl();
-  }, [file.key, file.previewUrl]);
+    resolve();
+    return () => {
+      cancelled = true;
+    };
+  }, [file.key, file.previewUrl, s3.ready, s3.headObject, s3.getPresignedUrl]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {

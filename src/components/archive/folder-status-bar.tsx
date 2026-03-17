@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { Snowflake, Pickaxe, Sun, Download, Trash2, Folder, FileIcon, X } from "lucide-react";
+import { Snowflake, Pickaxe, Sun, Zap, Trash2, Folder, FileIcon, X, Download } from "lucide-react";
 import { formatFileSize } from "@/lib/file-utils";
+import { useS3 } from "@/hooks/use-s3";
 
 interface FolderStats {
   totalFiles: number;
@@ -30,6 +31,7 @@ interface FolderStatusBarProps {
   selection: Selection | null;
   onRestoreComplete: () => void;
   onDeleteComplete: () => void;
+  isInstant?: boolean;
 }
 
 export function FolderStatusBar({
@@ -39,15 +41,53 @@ export function FolderStatusBar({
   selection,
   onRestoreComplete,
   onDeleteComplete,
+  isInstant,
 }: FolderStatusBarProps) {
   const [restoring, setRestoring] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
+  const s3 = useS3();
+
   const { totalFiles, totalSize, archivedCount, availableCount } = stats;
   const sizeLabel = formatFileSize(totalSize);
+
+  // Helper: list all objects recursively under a prefix
+  async function listAllObjects(prefix: string) {
+    const allObjects: { Key: string; Size: number; StorageClass?: string }[] = [];
+    let continuationToken: string | undefined;
+
+    do {
+      const listing = await s3.listObjects(prefix, "", continuationToken);
+      for (const obj of listing.Contents || []) {
+        if (obj.Key && !obj.Key.endsWith("/")) {
+          allObjects.push({
+            Key: obj.Key,
+            Size: obj.Size || 0,
+            StorageClass: obj.StorageClass,
+          });
+        }
+      }
+      continuationToken = listing.NextContinuationToken;
+    } while (continuationToken);
+
+    return allObjects;
+  }
+
+  // Helper: compute S3 prefix from folderPath
+  function getS3Prefix(): string {
+    if (isInstant) {
+      const subPath = folderPath.replace(/^instant\/?/, "");
+      return subPath ? `instant/${subPath}/` : "instant/";
+    }
+    if (folderPath.startsWith("originals/") || folderPath.startsWith("instant/")) {
+      return folderPath.endsWith("/") ? folderPath : `${folderPath}/`;
+    }
+    return folderPath ? `originals/${folderPath}/` : "originals/";
+  }
 
   async function handleRestore() {
     setShowRestoreConfirm(false);
@@ -55,15 +95,38 @@ export function FolderStatusBar({
     setError("");
 
     try {
+      if (!s3.ready) {
+        setError("S3 credentials not ready yet");
+        return;
+      }
+
+      const prefix = getS3Prefix();
+      const objects = await listAllObjects(prefix);
+
+      let fileCount = 0;
+      let totalSizeBytes = 0;
+
+      // Issue restore requests directly from the client
+      for (const obj of objects) {
+        try {
+          await s3.restoreObject(obj.Key, 7);
+          fileCount++;
+          totalSizeBytes += obj.Size;
+        } catch {
+          // Already restoring, not in Glacier, or standard -- skip
+        }
+      }
+
+      // Notify server for DB tracking only
       const res = await fetch("/api/archive/restore", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folderPath }),
+        body: JSON.stringify({ folderPath, fileCount, totalSize: totalSizeBytes }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error || "Restore failed");
+        setError(data.error || "Restore tracking failed");
         return;
       }
 
@@ -82,21 +145,67 @@ export function FolderStatusBar({
     setError("");
 
     try {
-      const body =
-        selection.type === "file"
-          ? { key: selection.key }
-          : { prefix: selection.key };
-
-      const res = await fetch("/api/archive/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error || "Delete failed");
+      if (!s3.ready) {
+        setError("S3 credentials not ready yet");
         return;
+      }
+
+      if (selection.type === "file") {
+        // Delete the file from S3
+        await s3.deleteObject(selection.key);
+
+        // Try to delete the preview too
+        if (selection.key.startsWith("originals/")) {
+          const previewKey = selection.key.replace(/^originals\//, "previews/");
+          try {
+            await s3.deleteObject(previewKey);
+          } catch {
+            // Preview might not exist
+          }
+        }
+
+        // Notify server for DB cleanup only
+        const res = await fetch("/api/archive/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: selection.key }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.error || "Delete tracking failed");
+          return;
+        }
+      } else {
+        // Folder: list all objects recursively and delete each one
+        const objects = await listAllObjects(selection.key);
+
+        for (const obj of objects) {
+          await s3.deleteObject(obj.Key);
+
+          // Delete corresponding preview
+          if (obj.Key.startsWith("originals/")) {
+            const previewKey = obj.Key.replace(/^originals\//, "previews/");
+            try {
+              await s3.deleteObject(previewKey);
+            } catch {
+              // Preview might not exist
+            }
+          }
+        }
+
+        // Notify server for DB cleanup only
+        const res = await fetch("/api/archive/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prefix: selection.key }),
+        });
+
+        const data = await res.json();
+        if (!res.ok) {
+          setError(data.error || "Delete tracking failed");
+          return;
+        }
       }
 
       onDeleteComplete();
@@ -107,8 +216,61 @@ export function FolderStatusBar({
     }
   }
 
+  async function handleDownloadAll() {
+    setDownloading(true);
+    setError("");
+
+    try {
+      if (!s3.ready) {
+        setError("S3 credentials not ready yet");
+        return;
+      }
+
+      const JSZip = (await import("jszip")).default;
+      const prefix = getS3Prefix();
+      const objects = await listAllObjects(prefix);
+
+      if (!objects.length) {
+        setError("No files to download");
+        return;
+      }
+
+      const zip = new JSZip();
+
+      for (const obj of objects) {
+        const url = await s3.getPresignedUrl(obj.Key);
+        const blob = await fetch(url).then((r) => r.blob());
+        const name = obj.Key.split("/").pop()!;
+        zip.file(name, blob);
+      }
+
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${folderPath.split("/").pop() || "archive"}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Download failed.");
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   // Archive status chip
   function ArchiveChip() {
+    if (isInstant) {
+      return (
+        <div className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 dark:border-amber-900 dark:bg-amber-950/30">
+          <Zap className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+          <span className="text-xs">
+            {totalFiles} file{totalFiles !== 1 ? "s" : ""} ({sizeLabel}) — S3 Standard, always available, no restore wait
+          </span>
+        </div>
+      );
+    }
+
     if (restoreStatus && (restoreStatus.status === "PENDING" || restoreStatus.status === "RESTORING")) {
       const timeAgo = getTimeAgo(new Date(restoreStatus.requestedAt));
       return (
@@ -214,9 +376,22 @@ export function FolderStatusBar({
             </button>
           </div>
         ) : (
-          <span className="text-xs text-muted-foreground">
-            {totalFiles} item{totalFiles !== 1 ? "s" : ""}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">
+              {totalFiles} item{totalFiles !== 1 ? "s" : ""}
+            </span>
+            {totalFiles > 0 && (availableCount > 0 || isInstant) && (
+              <button
+                onClick={handleDownloadAll}
+                disabled={downloading}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+                title="Download all files as ZIP"
+              >
+                <Download className="h-3 w-3" />
+                {downloading ? "Zipping..." : "Download All"}
+              </button>
+            )}
+          </div>
         )}
       </div>
 
