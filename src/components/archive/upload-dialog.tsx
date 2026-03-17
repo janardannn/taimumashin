@@ -2,8 +2,9 @@
 
 import { useState, useCallback } from "react";
 import { Upload, FolderUp, X } from "lucide-react";
-import { formatFileSize } from "@/lib/file-utils";
+import { formatFileSize, getFileType } from "@/lib/file-utils";
 import { canGenerateThumbnail, generateImageThumbnail } from "@/lib/preview-generator";
+import { useS3 } from "@/hooks/use-s3";
 
 interface UploadDialogProps {
   folderPath: string;
@@ -22,6 +23,7 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const s3 = useS3();
 
   const processFileList = useCallback((fileList: FileList | File[]) => {
     const arr = Array.from(fileList);
@@ -54,6 +56,7 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
   async function uploadFiles() {
     setUploading(true);
     setError("");
+    let anySuccess = false;
 
     for (let i = 0; i < files.length; i++) {
       const { file, relativePath } = files[i];
@@ -63,35 +66,42 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
       );
 
       try {
-        const res = await fetch("/api/archive/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            fileName: relativePath,
-            contentType: file.type || "application/octet-stream",
-            folderPath,
-            lastModified: file.lastModified,
-          }),
-        });
+        const contentType = file.type || "application/octet-stream";
 
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data.error || `Upload failed (${res.status})`);
+        // Decode to ensure literal characters in S3 keys, not URL-encoded
+        const decodedFolder = folderPath ? decodeURIComponent(folderPath) : "";
+
+        // Determine if uploading to instant/ folder
+        const isInstant = decodedFolder === "instant" || decodedFolder.startsWith("instant/");
+        const prefix = isInstant ? "instant" : "originals";
+        const subPath = isInstant ? decodedFolder.replace(/^instant\/?/, "") : decodedFolder;
+        const key = `${prefix}/${subPath ? subPath + "/" : ""}${relativePath}`;
+
+        // Preserve original file metadata
+        const metadata: Record<string, string> = {};
+        if (file.lastModified) {
+          metadata["original-last-modified"] = new Date(file.lastModified).toISOString();
         }
 
-        const { url, previewUrl, metaHeaders } = await res.json();
+        // Get presigned PUT URL from client-side S3
+        const url = await s3.getPresignedPutUrl(
+          key,
+          contentType,
+          Object.keys(metadata).length > 0 ? metadata : undefined
+        );
+
+        // Get preview presigned URL for non-instant images
+        let previewUrl: string | null = null;
+        if (!isInstant && getFileType(relativePath) === "image") {
+          const previewKey = key.replace(/^originals\//, "previews/");
+          previewUrl = await s3.getPresignedPutUrl(previewKey, "image/webp");
+        }
 
         // Upload directly to S3 via presigned PUT
         await new Promise<void>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open("PUT", url);
-          xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
-          // Set metadata headers so S3 stores the original file dates
-          if (metaHeaders) {
-            for (const [header, value] of Object.entries(metaHeaders)) {
-              xhr.setRequestHeader(header, value as string);
-            }
-          }
+          xhr.setRequestHeader("Content-Type", contentType);
 
           xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
@@ -122,6 +132,19 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
           }
         }
 
+        // Track in DB
+        await fetch("/api/archive/upload/confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            key,
+            size: file.size,
+            contentType,
+            originalDate: file.lastModified ? new Date(file.lastModified).toISOString() : null,
+          }),
+        });
+
+        anySuccess = true;
         setFiles((prev) =>
           prev.map((f, j) => (j === i ? { ...f, status: "done", progress: 100 } : f))
         );
@@ -135,13 +158,9 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
     }
 
     setUploading(false);
-    // Only notify parent if at least one file succeeded
-    setFiles((prev) => {
-      if (prev.some((f) => f.status === "done")) {
-        onUploadComplete();
-      }
-      return prev;
-    });
+    if (anySuccess) {
+      onUploadComplete();
+    }
   }
 
   const doneCount = files.filter((f) => f.status === "done").length;
