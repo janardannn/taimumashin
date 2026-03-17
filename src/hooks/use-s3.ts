@@ -188,13 +188,13 @@ export function useS3() {
   );
 
   const restoreObject = useCallback(
-    async (key: string, days = 7) => {
+    async (key: string, days = 7, tier: "Expedited" | "Standard" | "Bulk" = "Standard") => {
       const { client, bucket } = await getClient();
       return client.send(
         new RestoreObjectCommand({
           Bucket: bucket,
           Key: key,
-          RestoreRequest: { Days: days, GlacierJobParameters: { Tier: "Bulk" } },
+          RestoreRequest: { Days: days, GlacierJobParameters: { Tier: tier } },
         })
       );
     },

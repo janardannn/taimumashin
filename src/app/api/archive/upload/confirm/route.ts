@@ -19,14 +19,42 @@ export async function POST(req: Request) {
   const prisma = await getPrisma();
 
   // Extract file name and folder path from S3 key
-  // key format: originals/some/path/file.jpg
-  const withoutPrefix = key.replace(/^originals\//, "");
+  // key format: originals/some/path/file.jpg or instant/some/path/file.jpg
+  const isInstant = key.startsWith("instant/");
+  const withoutPrefix = key.replace(/^(originals|instant)\//, "");
   const parts = withoutPrefix.split("/");
   const name = parts.pop()!;
-  const folderPath = parts.join("/") || "/";
+  const rawFolderPath = parts.join("/");
+  // For instant files, keep "instant/..." prefix in folderPath to match browse query
+  const folderPath = isInstant
+    ? (rawFolderPath ? `instant/${rawFolderPath}` : "instant")
+    : (rawFolderPath || "/");
 
-  const previewKey = key.replace(/^originals\//, "previews/");
+  const previewKey = isInstant ? null : key.replace(/^originals\//, "previews/");
   const fileType = getFileType(name);
+
+  // Auto-create any missing folder records in the path hierarchy
+  // e.g. folderPath "photos/vacation" needs folders: "photos" and "photos/vacation"
+  if (folderPath !== "/" && folderPath !== "instant") {
+    const pathParts = folderPath.split("/");
+    // For instant paths like "instant/photos/vacation", skip the "instant" prefix for hierarchy
+    const startIdx = isInstant ? 1 : 0;
+    for (let i = startIdx; i < pathParts.length; i++) {
+      const ancestorPath = pathParts.slice(0, i + 1).join("/");
+      const folderName = pathParts[i];
+      await prisma.folder.upsert({
+        where: {
+          userId_path: { userId: session.user.id, path: ancestorPath },
+        },
+        update: {},
+        create: {
+          userId: session.user.id,
+          name: folderName,
+          path: ancestorPath,
+        },
+      });
+    }
+  }
 
   await prisma.file.create({
     data: {

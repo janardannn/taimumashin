@@ -3,16 +3,15 @@
 import { useState, useEffect, useMemo } from "react";
 import { Cloud, Lock } from "lucide-react";
 // import { Save } from "lucide-react";
+import { REGIONS as PRICING_REGIONS, PRICING_DATE } from "@/lib/pricing";
 
-const REGIONS = [
-  { region: "ap-south-1",     label: "Asia Pacific (Mumbai)",    standardPerGB: 0.025,  glacierDeepPerGB: 0.002,   retrievalPerGB: 0.024 },
-  { region: "us-east-1",      label: "US East (N. Virginia)",    standardPerGB: 0.023,  glacierDeepPerGB: 0.00099, retrievalPerGB: 0.02  },
-  { region: "us-west-2",      label: "US West (Oregon)",         standardPerGB: 0.023,  glacierDeepPerGB: 0.00099, retrievalPerGB: 0.02  },
-  { region: "eu-west-1",      label: "Europe (Ireland)",         standardPerGB: 0.023,  glacierDeepPerGB: 0.00099, retrievalPerGB: 0.02  },
-  { region: "eu-central-1",   label: "Europe (Frankfurt)",       standardPerGB: 0.0245, glacierDeepPerGB: 0.0018,  retrievalPerGB: 0.024 },
-  { region: "ap-southeast-1", label: "Asia Pacific (Singapore)", standardPerGB: 0.025,  glacierDeepPerGB: 0.002,   retrievalPerGB: 0.024 },
-  { region: "ap-northeast-1", label: "Asia Pacific (Tokyo)",     standardPerGB: 0.025,  glacierDeepPerGB: 0.002,   retrievalPerGB: 0.022 },
-];
+const REGIONS = Object.entries(PRICING_REGIONS).map(([region, r]) => ({
+  region,
+  label: r.label,
+  standardPerGB: r.standardPerGB,
+  glacierPerGB: r.glacierPerGB,
+  retrievalPerGB: r.restore.standard.perGB,
+}));
 
 const COST_TIERS = [
   { label: "1 GB", gb: 1 },
@@ -159,7 +158,7 @@ export function SettingsContent() {
               >
                 {REGIONS.map((r) => (
                   <option key={r.region} value={r.region}>
-                    {r.label} ({r.region}) — ${r.glacierDeepPerGB}/GB
+                    {r.label} ({r.region}) — ${r.glacierPerGB}/GB
                   </option>
                 ))}
               </select>
@@ -177,8 +176,8 @@ export function SettingsContent() {
 
           <div className="grid grid-cols-3 gap-3">
             <div className="rounded-lg border p-3 text-center">
-              <p className="text-xs text-muted-foreground">Glacier Deep Archive</p>
-              <p className="mt-1 text-lg font-bold">${selectedRegion.glacierDeepPerGB}</p>
+              <p className="text-xs text-muted-foreground">Glacier Flexible</p>
+              <p className="mt-1 text-lg font-bold">${selectedRegion.glacierPerGB}</p>
               <p className="text-xs text-muted-foreground">/GB/month</p>
             </div>
             <div className="rounded-lg border p-3 text-center">
@@ -205,7 +204,7 @@ export function SettingsContent() {
               </thead>
               <tbody className="divide-y">
                 {COST_TIERS.map((tier) => {
-                  const glacierCost = tier.gb * selectedRegion.glacierDeepPerGB;
+                  const glacierCost = tier.gb * selectedRegion.glacierPerGB;
                   const previewCost = tier.gb * PREVIEW_RATIO * selectedRegion.standardPerGB;
                   const total = glacierCost + previewCost;
                   return (
@@ -233,7 +232,7 @@ export function SettingsContent() {
             Previews estimated at ~8% of original data. Data transfer out is free under 100GB/month.
           </p>
           <p className="text-xs text-muted-foreground/60">
-            Pricing sourced from AWS Bulk Pricing API (Mar 2026). Rates may have changed since — check aws.amazon.com/s3/pricing for the latest.
+            Pricing as of {PRICING_DATE}. Rates may have changed since — check aws.amazon.com/s3/pricing for the latest.
           </p>
           <p className="text-xs text-muted-foreground/60">
             INR estimates use $1 = {"\u20B9"}{USD_TO_INR} (Mar 2026).

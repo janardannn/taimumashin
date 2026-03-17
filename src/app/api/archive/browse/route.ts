@@ -22,8 +22,13 @@ export async function GET(req: NextRequest) {
   const prisma = await getPrisma();
   const userId = session.user.id;
 
-  // 1. Direct child folders
-  // parentId is never populated, so we use string matching on path
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { region: true },
+  });
+
+  try {
+  // 1. Direct child folders — from Folder table
   const allFolders = await prisma.folder.findMany({
     where: {
       userId,
@@ -35,30 +40,87 @@ export async function GET(req: NextRequest) {
   });
 
   // Filter to direct children only (no deeper nesting)
-  const folders = allFolders.filter((f) => {
+  const explicitFolders = allFolders.filter((f) => {
     if (folderPath === "/") {
-      // Top-level: exclude instant folders when browsing originals
       return !f.path.includes("/") && !f.path.startsWith("instant");
     }
     const remainder = f.path.slice(folderPath.length + 1);
     return remainder.length > 0 && !remainder.includes("/");
   });
 
-  // 2. Files at this exact folder path
-  const files = await prisma.file.findMany({
-    where: { userId, folderPath },
-    orderBy: { originalDate: "desc" },
-  });
-
-  // 3. Recursive stats
-  const statsResult = await prisma.file.aggregate({
+  // 2. Derive implicit folders from File.folderPath — catches folders
+  //    created before upload/confirm auto-created folder records
+  const childFiles = await prisma.file.findMany({
     where: {
       userId,
-      OR: [
-        { folderPath },
-        { folderPath: { startsWith: folderPath === "/" ? "" : `${folderPath}/` } },
-      ],
+      ...(folderPath === "/"
+        ? {
+            NOT: [
+              { folderPath: "/" },
+              { folderPath: { startsWith: "instant" } },
+            ],
+          }
+        : {
+            folderPath: { startsWith: `${folderPath}/` },
+            NOT: { folderPath },
+          }),
     },
+    select: { folderPath: true, createdAt: true },
+  });
+
+  // Extract the direct child folder name from each file's folderPath
+  const implicitMap = new Map<string, { name: string; path: string; createdAt: Date }>();
+  for (const f of childFiles) {
+    const remainder = folderPath === "/"
+      ? f.folderPath
+      : f.folderPath.slice(folderPath.length + 1);
+    const directChild = remainder.split("/")[0];
+    if (!directChild) continue;
+    const childPath = folderPath === "/" ? directChild : `${folderPath}/${directChild}`;
+    if (!implicitMap.has(childPath)) {
+      implicitMap.set(childPath, { name: directChild, path: childPath, createdAt: f.createdAt });
+    }
+  }
+
+  // Merge explicit + implicit, deduplicating by path
+  const explicitPaths = new Set(explicitFolders.map((f) => f.path));
+  const folders = [
+    ...explicitFolders,
+    ...[...implicitMap.values()]
+      .filter((f) => !explicitPaths.has(f.path))
+      .map((f) => ({ id: `implicit-${f.path}`, name: f.name, path: f.path, createdAt: f.createdAt })),
+  ];
+
+  // 3. Files at this exact folder path
+  const files = await prisma.file.findMany({
+    where: { userId, folderPath },
+    orderBy: [{ originalDate: "desc" }, { createdAt: "desc" }],
+  });
+
+  // 4. Recursive stats (exclude instant files when browsing originals root)
+  const statsWhere = isInstant
+    ? {
+        userId,
+        OR: [
+          { folderPath },
+          { folderPath: { startsWith: `${folderPath}/` } },
+        ],
+      }
+    : folderPath === "/"
+      ? {
+          userId,
+          NOT: { folderPath: { startsWith: "instant" } },
+        }
+      : {
+          userId,
+          OR: [
+            { folderPath },
+            { folderPath: { startsWith: `${folderPath}/` } },
+          ],
+        };
+
+  const statsResult = await prisma.file.aggregate({
+    where: statsWhere,
     _count: true,
     _sum: { size: true },
   });
@@ -66,7 +128,7 @@ export async function GET(req: NextRequest) {
   const totalFiles = statsResult._count;
   const totalSize = Number(statsResult._sum.size || 0);
 
-  // 4. Restore status (reuse logic from /api/archive/status)
+  // 5. Restore status (reuse logic from /api/archive/status)
   let restoreStatus = null;
   if (!isInstant) {
     const statusPath = folderPath === "/" ? "/" : folderPath;
@@ -120,5 +182,16 @@ export async function GET(req: NextRequest) {
       availableCount: isInstant ? totalFiles : 0,
     },
     restoreStatus,
+    region: user?.region || "us-east-1",
   });
+
+  } catch (err) {
+    console.error("Browse API error:", err);
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+    return NextResponse.json(
+      { error: message, stack },
+      { status: 500 }
+    );
+  }
 }

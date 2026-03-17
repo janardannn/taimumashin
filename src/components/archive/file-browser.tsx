@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { FolderPlus, Upload, RefreshCw, Zap } from "lucide-react";
+import { FolderPlus, Upload, RefreshCw } from "lucide-react";
 import { FolderCard } from "./folder-card";
 import { FileCard } from "./file-card";
 import { FileViewer } from "./file-viewer";
@@ -92,6 +92,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
   const [files, setFiles] = useState<S3File[]>([]);
   const [stats, setStats] = useState({ totalFiles: 0, totalSize: 0, archivedCount: 0, availableCount: 0 });
   const [restoreStatus, setRestoreStatus] = useState<{ status: string; requestedAt: string; fileCount: number } | null>(null);
+  const [region, setRegion] = useState("us-east-1");
   const [loading, setLoading] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
   const [showNewFolder, setShowNewFolder] = useState(false);
@@ -128,7 +129,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
         key: f.s3Key,
         size: f.size,
         lastModified: f.originalDate || f.createdAt,
-        storageClass: isInstantPath ? "STANDARD" : "DEEP_ARCHIVE",
+        storageClass: isInstantPath ? "STANDARD" : "GLACIER",
         previewUrl: null,
         previewKey: f.previewKey,
       }));
@@ -137,6 +138,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
       setFiles(fileResults);
       setStats(data.stats);
       setRestoreStatus(data.restoreStatus);
+      setRegion(data.region || "us-east-1");
     } catch (err) {
       console.error("Failed to load contents:", err);
       setError("Failed to load files. Check your connection.");
@@ -290,19 +292,6 @@ export function FileBrowser({ path }: FileBrowserProps) {
         </div>
       ) : (
         <>
-          {!path && (
-            <button
-              onClick={() => router.push("/instant")}
-              className="flex w-full items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-left transition-colors hover:bg-amber-500/20"
-            >
-              <Zap className="h-5 w-5 text-amber-500 shrink-0" />
-              <div>
-                <p className="text-sm font-semibold">Instant</p>
-                <p className="text-xs text-muted-foreground">Always available — no archiving, no restore wait</p>
-              </div>
-            </button>
-          )}
-
           <div onClick={(e) => e.stopPropagation()}>
             <FolderStatusBar
               folderPath={decodedPath}
@@ -312,8 +301,23 @@ export function FileBrowser({ path }: FileBrowserProps) {
               onRestoreComplete={loadContents}
               onDeleteComplete={handleDeleteComplete}
               isInstant={isInstantPath}
+              region={region}
             />
           </div>
+
+          {!path && (
+            <div className="flex flex-wrap gap-x-3 gap-y-2">
+              <FolderCard
+                name="Instant"
+                path="instant"
+                variant="instant"
+                pinned
+                selected={selectedFolder === "instant"}
+                onClick={() => handleFolderClick("instant")}
+                onDoubleClick={() => router.push("/instant")}
+              />
+            </div>
+          )}
 
           {dateGroups.map((group) => {
             const groupFolders = group.items.filter((i) => i.type === "folder");

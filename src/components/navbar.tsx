@@ -54,7 +54,7 @@ export function Navbar({ user, minimal }: NavbarProps) {
             <div className="relative" ref={dropdownRef}>
               <button
                 onClick={() => setOpen(!open)}
-                className="flex items-center gap-2 rounded-lg border px-2.5 py-1.5 bg-accent/50 hover:bg-accent transition-colors"
+                className="flex items-center gap-1.5 rounded-lg border px-1.5 py-1 bg-accent/50 hover:bg-accent transition-colors"
               >
                 {user.image ? (
                   // eslint-disable-next-line @next/next/no-img-element

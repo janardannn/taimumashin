@@ -3,17 +3,142 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
-import { KeyRound, Github, ExternalLink, Copy, Check, Shield } from "lucide-react";
+import { KeyRound, Github, ExternalLink, Copy, Check, Shield, Calculator, X } from "lucide-react";
 
-const AWS_REGIONS = [
-  { value: "ap-south-1",     label: "Asia Pacific (Mumbai)",    glacierDeepPerGB: 0.002   },
-  { value: "us-east-1",      label: "US East (N. Virginia)",    glacierDeepPerGB: 0.00099 },
-  { value: "us-west-2",      label: "US West (Oregon)",         glacierDeepPerGB: 0.00099 },
-  { value: "eu-west-1",      label: "Europe (Ireland)",         glacierDeepPerGB: 0.00099 },
-  { value: "eu-central-1",   label: "Europe (Frankfurt)",       glacierDeepPerGB: 0.0018  },
-  { value: "ap-southeast-1", label: "Asia Pacific (Singapore)", glacierDeepPerGB: 0.002   },
-  { value: "ap-northeast-1", label: "Asia Pacific (Tokyo)",     glacierDeepPerGB: 0.002   },
+import { REGIONS as PRICING_REGIONS, PRICING_DATE, type RegionPricing } from "@/lib/pricing";
+
+const AWS_REGIONS = Object.entries(PRICING_REGIONS).map(([value, r]) => ({
+  value,
+  label: r.label,
+  glacierPerGB: r.glacierPerGB,
+}));
+
+const PREVIEW_RATIO = 0.08;
+const STORAGE_TIERS = [
+  { label: "1 GB", gb: 1 },
+  { label: "10 GB", gb: 10 },
+  { label: "50 GB", gb: 50 },
+  { label: "100 GB", gb: 100 },
+  { label: "200 GB", gb: 200 },
+  { label: "500 GB", gb: 500 },
+  { label: "1 TB", gb: 1024 },
 ];
+
+const RETRIEVAL_TIERS = [
+  { label: "1 GB", gb: 1 },
+  { label: "10 GB", gb: 10 },
+  { label: "50 GB", gb: 50 },
+  { label: "100 GB", gb: 100 },
+  { label: "200 GB", gb: 200 },
+  { label: "500 GB", gb: 500 },
+  { label: "1 TB", gb: 1024 },
+];
+
+function fmt(n: number) {
+  if (n === 0) return "Free";
+  return n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
+}
+
+function CostEstimatorModal({
+  onClose,
+}: {
+  onClose: () => void;
+}) {
+  const [selectedRegion, setSelectedRegion] = useState("ap-south-1");
+  const pricing: RegionPricing = PRICING_REGIONS[selectedRegion] || PRICING_REGIONS["us-east-1"];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div
+        className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-lg bg-background p-6 shadow-lg"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold">Cost Estimator</h2>
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <select
+          value={selectedRegion}
+          onChange={(e) => setSelectedRegion(e.target.value)}
+          className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm mb-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {Object.entries(PRICING_REGIONS).map(([key, r]) => (
+            <option key={key} value={key}>
+              {r.label} ({key})
+            </option>
+          ))}
+        </select>
+
+        {/* Storage costs */}
+        <h3 className="text-sm font-semibold mb-2">Monthly Storage</h3>
+        <div className="rounded-lg border overflow-hidden mb-5">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-muted/50 text-xs">
+                <th className="px-3 py-2 text-left font-medium">Data</th>
+                <th className="px-3 py-2 text-right font-medium">Glacier Flexible</th>
+                <th className="px-3 py-2 text-right font-medium">Previews (~8%)</th>
+                <th className="px-3 py-2 text-right font-medium">Total/mo</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {STORAGE_TIERS.map((tier) => {
+                const glacier = tier.gb * pricing.glacierPerGB;
+                const preview = tier.gb * PREVIEW_RATIO * pricing.standardPerGB;
+                const total = glacier + preview;
+                return (
+                  <tr key={tier.label} className="hover:bg-muted/30">
+                    <td className="px-3 py-1.5 font-medium">{tier.label}</td>
+                    <td className="px-3 py-1.5 text-right text-muted-foreground">{fmt(glacier)}</td>
+                    <td className="px-3 py-1.5 text-right text-muted-foreground">{fmt(preview)}</td>
+                    <td className="px-3 py-1.5 text-right font-semibold">{fmt(total)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Retrieval costs */}
+        <h3 className="text-sm font-semibold mb-2">Retrieval (one-time, when you restore)</h3>
+        <div className="rounded-lg border overflow-hidden mb-4">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-muted/50 text-xs">
+                <th className="px-3 py-2 text-left font-medium">Data</th>
+                <th className="px-3 py-2 text-right font-medium">Expedited ({pricing.restore.expedited.time})</th>
+                <th className="px-3 py-2 text-right font-medium">Standard ({pricing.restore.standard.time})</th>
+                <th className="px-3 py-2 text-right font-medium">Bulk ({pricing.restore.bulk.time})</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {RETRIEVAL_TIERS.map((tier) => {
+                const expedited = tier.gb * pricing.restore.expedited.perGB;
+                const standard = tier.gb * pricing.restore.standard.perGB;
+                const bulk = tier.gb * pricing.restore.bulk.perGB;
+                return (
+                  <tr key={tier.label} className="hover:bg-muted/30">
+                    <td className="px-3 py-1.5 font-medium">{tier.label}</td>
+                    <td className="px-3 py-1.5 text-right text-muted-foreground">{fmt(expedited)}</td>
+                    <td className="px-3 py-1.5 text-right text-muted-foreground">{fmt(standard)}</td>
+                    <td className="px-3 py-1.5 text-right font-semibold">{fmt(bulk)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          Pricing as of {PRICING_DATE}. Previews estimated at ~8% of original data. Data transfer out free under 100 GB/month.
+        </p>
+      </div>
+    </div>
+  );
+}
 
 function A({ href, children }: { href: string; children: React.ReactNode }) {
   return (
@@ -36,9 +161,9 @@ const STEPS: { title: string; body: React.ReactNode }[] = [
       <>
         If you don&apos;t have one, go to{" "}
         <A href="https://aws.amazon.com/free/">aws.amazon.com</A> and sign up.
-        You&apos;ll need an email and a credit card. Don&apos;t worry — Glacier
-        Deep Archive costs about <strong>$1 per TB/month</strong>, so storing a
-        few hundred GB is practically free.
+        You&apos;ll need an email and a credit card. Don&apos;t worry —
+        S3 Glacier Flexible Retrieval costs about <strong>$3.60 per TB/month</strong>, so
+        storing 100 GB costs under $0.50/month.
       </>
     ),
   },
@@ -47,7 +172,12 @@ const STEPS: { title: string; body: React.ReactNode }[] = [
     body: (
       <>
         CloudFormation is an AWS service that creates resources from a template
-        — think of it as a one-click installer. Open the{" "}
+        — think of it as a one-click installer. Before opening it,{" "}
+        <strong>select your preferred region</strong> from the dropdown in the{" "}
+        <strong>top-right corner</strong> of the AWS Console (next to your
+        account name). Pick the region closest to you — e.g. &quot;Asia Pacific
+        (Mumbai)&quot; if you&apos;re in India, or &quot;US East (N. Virginia)&quot;
+        for the cheapest US pricing. Then open the{" "}
         <A href="https://console.aws.amazon.com/cloudformation/home#/stacks/create">
           CloudFormation console
         </A>{" "}
@@ -164,6 +294,7 @@ export function OnboardingContent() {
   const [region, setRegion] = useState("ap-south-1");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showCostEstimator, setShowCostEstimator] = useState(false);
 
   const [cfnParams, setCfnParams] = useState({ issuerUrl: "", webhookUrl: "" });
 
@@ -310,10 +441,23 @@ export function OnboardingContent() {
             >
               {AWS_REGIONS.map((r) => (
                 <option key={r.value} value={r.value}>
-                  {r.label} ({r.value}) — ${r.glacierDeepPerGB}/GB
+                  {r.label} ({r.value}) — ${r.glacierPerGB}/GB
                 </option>
               ))}
             </select>
+            <ul className="text-xs text-muted-foreground list-disc pl-4 space-y-0.5">
+              <li>Pick the region <strong>closest to you</strong> for fastest uploads</li>
+              <li>This must match the region you deploy the CloudFormation stack in</li>
+              <li>Check the <strong>top-right corner</strong> of the AWS Console to see/change your region before creating the stack</li>
+            </ul>
+            <button
+              type="button"
+              onClick={() => setShowCostEstimator(true)}
+              className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-1"
+            >
+              <Calculator className="h-3 w-3" />
+              Compare pricing across regions
+            </button>
           </div>
 
           {error && (
@@ -375,6 +519,10 @@ export function OnboardingContent() {
           ))}
         </ol>
       </div>
+
+      {showCostEstimator && (
+        <CostEstimatorModal onClose={() => setShowCostEstimator(false)} />
+      )}
     </div>
   );
 }

@@ -3,16 +3,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { HardDrive, FolderOpen, FileText, Pickaxe, Download } from "lucide-react";
 import { formatFileSize } from "@/lib/file-utils";
-
-const REGIONS: Record<string, { label: string; standardPerGB: number; glacierDeepPerGB: number; retrievalPerGB: number }> = {
-  "ap-south-1":     { label: "Mumbai",    standardPerGB: 0.025,  glacierDeepPerGB: 0.002,   retrievalPerGB: 0.024 },
-  "us-east-1":      { label: "Virginia",  standardPerGB: 0.023,  glacierDeepPerGB: 0.00099, retrievalPerGB: 0.02  },
-  "us-west-2":      { label: "Oregon",    standardPerGB: 0.023,  glacierDeepPerGB: 0.00099, retrievalPerGB: 0.02  },
-  "eu-west-1":      { label: "Ireland",   standardPerGB: 0.023,  glacierDeepPerGB: 0.00099, retrievalPerGB: 0.02  },
-  "eu-central-1":   { label: "Frankfurt", standardPerGB: 0.0245, glacierDeepPerGB: 0.0018,  retrievalPerGB: 0.024 },
-  "ap-southeast-1": { label: "Singapore", standardPerGB: 0.025,  glacierDeepPerGB: 0.002,   retrievalPerGB: 0.024 },
-  "ap-northeast-1": { label: "Tokyo",     standardPerGB: 0.025,  glacierDeepPerGB: 0.002,   retrievalPerGB: 0.022 },
-};
+import { REGIONS as PRICING_REGIONS, getRegionPricing, PRICING_DATE } from "@/lib/pricing";
 
 const PREVIEW_RATIO = 0.08;
 
@@ -49,14 +40,14 @@ export function DashboardContent() {
 
   const costs = useMemo(() => {
     if (!stats) return null;
-    const pricing = REGIONS[stats.region] || REGIONS["ap-south-1"];
+    const pricing = getRegionPricing(stats.region);
     const totalGB = stats.totalSize / (1024 * 1024 * 1024);
     const previewGB = totalGB * PREVIEW_RATIO;
     const restoredGB = stats.dataRestoredThisMonth / (1024 * 1024 * 1024);
 
-    const storageCost = totalGB * pricing.glacierDeepPerGB;
+    const storageCost = totalGB * pricing.glacierPerGB;
     const previewCost = previewGB * pricing.standardPerGB;
-    const retrievalCost = restoredGB * pricing.retrievalPerGB;
+    const retrievalCost = restoredGB * pricing.restore.standard.perGB;
     const totalCost = storageCost + previewCost + retrievalCost;
 
     return { storageCost, previewCost, retrievalCost, totalCost, restoredGB, pricing };
@@ -108,9 +99,9 @@ export function DashboardContent() {
               <div className="flex items-center gap-2">
                 <HardDrive className="h-4 w-4 text-muted-foreground" />
                 <div>
-                  <p className="text-sm font-medium">Glacier Deep Archive</p>
+                  <p className="text-sm font-medium">Glacier Flexible</p>
                   <p className="text-xs text-muted-foreground">
-                    {formatFileSize(stats.totalSize)} @ ${costs.pricing.glacierDeepPerGB}/GB
+                    {formatFileSize(stats.totalSize)} @ ${costs.pricing.glacierPerGB}/GB
                   </p>
                 </div>
               </div>
@@ -141,7 +132,7 @@ export function DashboardContent() {
                   <p className="text-sm font-medium">Retrievals this month</p>
                   <p className="text-xs text-muted-foreground">
                     {stats.restoresThisMonth} restore{stats.restoresThisMonth !== 1 ? "s" : ""}
-                    {costs.restoredGB > 0 && ` — ${costs.restoredGB.toFixed(1)}GB @ $${costs.pricing.retrievalPerGB}/GB`}
+                    {costs.restoredGB > 0 && ` — ${costs.restoredGB.toFixed(1)}GB @ $${costs.pricing.restore.standard.perGB}/GB`}
                   </p>
                 </div>
               </div>
@@ -152,7 +143,7 @@ export function DashboardContent() {
           </div>
           <div className="px-4 py-2 bg-muted/20">
             <p className="text-xs text-muted-foreground">
-              Data transfer out is free under 100GB/month. Retrieval cost is for Standard tier (12-48hr).
+              Data transfer out is free under 100GB/month. Retrieval cost shown for Standard tier (3-5hr). Pricing as of {PRICING_DATE}.
             </p>
           </div>
         </div>

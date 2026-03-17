@@ -110,7 +110,7 @@ Resources:
             Status: Enabled
             Prefix: "originals/"
             Transitions:
-              - StorageClass: DEEP_ARCHIVE
+              - StorageClass: GLACIER
                 TransitionInDays: !Ref LifecycleDays
       CorsConfiguration:
         CorsRules:
@@ -343,7 +343,7 @@ Resources:
               if ext in VIDEO_EXTENSIONS:
                   generate_video_preview(bucket, key)
               elif ext in IMAGE_EXTENSIONS:
-                  generate_image_thumbnail(bucket, key)
+                  logger.info("Skipping image %s — thumbnails generated client-side.", key)
               else:
                   logger.info("Unsupported file type %s — skipping preview generation.", ext)
 
@@ -429,7 +429,7 @@ Resources:
                       ExtraArgs={
                           "ContentType": "video/webm",
                           "Metadata": {
-                              "source-key": key,
+                              "source-key": urllib.parse.quote(key, safe=""),
                               "preview-quality": os.environ.get("PREVIEW_QUALITY", "720p"),
                           },
                       },
@@ -437,39 +437,6 @@ Resources:
                   logger.info("Preview uploaded successfully.")
 
 
-          def generate_image_thumbnail(bucket, key):
-              """Generate a 300px-wide JPEG thumbnail."""
-              with tempfile.TemporaryDirectory(dir="/tmp") as tmpdir:
-                  input_path = os.path.join(tmpdir, "input" + Path(key).suffix)
-                  output_path = os.path.join(tmpdir, "thumbnail.jpg")
-
-                  logger.info("Downloading s3://%s/%s for thumbnail", bucket, key)
-                  s3.download_file(bucket, key, input_path)
-
-                  cmd = [
-                      FFMPEG, "-y",
-                      "-i", input_path,
-                      "-vf", "scale=300:-1",
-                      "-frames:v", "1", "-q:v", "3",
-                      output_path,
-                  ]
-                  result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                  if result.returncode != 0:
-                      logger.error("ffmpeg thumbnail stderr: %s", result.stderr[-1000:])
-                      raise RuntimeError(f"ffmpeg thumbnail failed with code {result.returncode}")
-
-                  preview_key = key.replace("originals/", "previews/", 1)
-                  preview_key = str(Path(preview_key).with_suffix(".jpg"))
-
-                  logger.info("Uploading thumbnail to s3://%s/%s", bucket, preview_key)
-                  s3.upload_file(
-                      output_path, bucket, preview_key,
-                      ExtraArgs={
-                          "ContentType": "image/jpeg",
-                          "Metadata": {"source-key": key},
-                      },
-                  )
-                  logger.info("Thumbnail uploaded successfully.")
 
 
           def probe_duration(file_path):

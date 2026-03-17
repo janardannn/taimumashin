@@ -1,14 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { Snowflake, Pickaxe, Sun, Zap, Trash2, Folder, FileIcon, X, Download } from "lucide-react";
+import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download } from "lucide-react";
 import { formatFileSize } from "@/lib/file-utils";
 import { useS3 } from "@/hooks/use-s3";
+import { getRegionPricing, PRICING_DATE, type RestoreTier } from "@/lib/pricing";
 
 interface FolderStats {
   totalFiles: number;
   totalSize: number;
-  archivedCount: number;
   availableCount: number;
 }
 
@@ -32,6 +32,7 @@ interface FolderStatusBarProps {
   onRestoreComplete: () => void;
   onDeleteComplete: () => void;
   isInstant?: boolean;
+  region?: string;
 }
 
 export function FolderStatusBar({
@@ -42,6 +43,7 @@ export function FolderStatusBar({
   onRestoreComplete,
   onDeleteComplete,
   isInstant,
+  region,
 }: FolderStatusBarProps) {
   const [restoring, setRestoring] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -52,7 +54,7 @@ export function FolderStatusBar({
 
   const s3 = useS3();
 
-  const { totalFiles, totalSize, archivedCount, availableCount } = stats;
+  const { totalFiles, totalSize, availableCount } = stats;
   const sizeLabel = formatFileSize(totalSize);
 
   // Helper: list all objects recursively under a prefix
@@ -89,7 +91,7 @@ export function FolderStatusBar({
     return folderPath ? `originals/${folderPath}/` : "originals/";
   }
 
-  async function handleRestore() {
+  async function handleRestore(tier: "Expedited" | "Standard" | "Bulk") {
     setShowRestoreConfirm(false);
     setRestoring(true);
     setError("");
@@ -109,12 +111,18 @@ export function FolderStatusBar({
       // Issue restore requests directly from the client
       for (const obj of objects) {
         try {
-          await s3.restoreObject(obj.Key, 7);
+          await s3.restoreObject(obj.Key, 7, tier);
           fileCount++;
           totalSizeBytes += obj.Size;
         } catch {
           // Already restoring, not in Glacier, or standard -- skip
         }
+      }
+
+      // Only track in DB if at least one file actually needed restoring
+      if (fileCount === 0) {
+        setError("No files need restoring — they may still be in standard storage.");
+        return;
       }
 
       // Notify server for DB tracking only
@@ -285,60 +293,22 @@ export function FolderStatusBar({
 
     if (totalFiles === 0) return null;
 
-    const allArchived = archivedCount === totalFiles;
-    const allAvailable = availableCount === totalFiles;
-
-    if (allAvailable) {
-      return (
-        <div className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 px-3 py-1.5 dark:border-green-900 dark:bg-green-950/30">
-          <Sun className="h-3.5 w-3.5 text-green-500" />
-          <span className="text-xs">
-            {totalFiles} file{totalFiles !== 1 ? "s" : ""} available ({sizeLabel})
-          </span>
-        </div>
-      );
-    }
-
-    if (allArchived) {
-      return (
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-2 rounded-md border px-3 py-1.5">
-            <Snowflake className="h-3.5 w-3.5 text-blue-500" />
-            <span className="text-xs">
-              {totalFiles} file{totalFiles !== 1 ? "s" : ""} archived ({sizeLabel})
-            </span>
-          </div>
-          <button
-            onClick={() => setShowRestoreConfirm(true)}
-            disabled={restoring}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-amber-500 px-2.5 text-xs font-medium text-white hover:bg-amber-600 disabled:opacity-50"
-          >
-            <Pickaxe className="h-3 w-3" />
-            {restoring ? "..." : "Restore"}
-          </button>
-        </div>
-      );
-    }
-
-    // Mixed
     return (
       <div className="flex items-center gap-2">
         <div className="flex items-center gap-2 rounded-md border px-3 py-1.5">
-          <Pickaxe className="h-3.5 w-3.5 text-amber-500" />
+          <Snowflake className="h-3.5 w-3.5 text-blue-500" />
           <span className="text-xs">
-            {availableCount} available, {archivedCount} archived ({sizeLabel})
+            {totalFiles} file{totalFiles !== 1 ? "s" : ""} ({sizeLabel})
           </span>
         </div>
-        {archivedCount > 0 && (
-          <button
-            onClick={() => setShowRestoreConfirm(true)}
-            disabled={restoring}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-amber-500 px-2.5 text-xs font-medium text-white hover:bg-amber-600 disabled:opacity-50"
-          >
-            <Pickaxe className="h-3 w-3" />
-            {restoring ? "..." : "Restore"}
-          </button>
-        )}
+        <button
+          onClick={() => setShowRestoreConfirm(true)}
+          disabled={restoring}
+          className="inline-flex h-7 items-center gap-1.5 rounded-md bg-amber-500 px-2.5 text-xs font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+        >
+          <Pickaxe className="h-3 w-3" />
+          {restoring ? "..." : "Restore"}
+        </button>
       </div>
     );
   }
@@ -398,8 +368,10 @@ export function FolderStatusBar({
       {/* Restore confirm modal */}
       {showRestoreConfirm && (
         <RestoreConfirmModal
-          fileCount={archivedCount || totalFiles}
+          fileCount={totalFiles}
+          totalSizeBytes={totalSize}
           size={sizeLabel}
+          region={region}
           onConfirm={handleRestore}
           onCancel={() => setShowRestoreConfirm(false)}
         />
@@ -418,36 +390,82 @@ export function FolderStatusBar({
   );
 }
 
+const TIER_KEYS: { key: RestoreTier; label: string }[] = [
+  { key: "expedited", label: "Expedited" },
+  { key: "standard", label: "Standard" },
+  { key: "bulk", label: "Bulk" },
+];
+
 function RestoreConfirmModal({
   fileCount,
+  totalSizeBytes,
   size,
+  region,
   onConfirm,
   onCancel,
 }: {
   fileCount: number;
+  totalSizeBytes: number;
   size: string;
-  onConfirm: () => void;
+  region?: string;
+  onConfirm: (tier: "Expedited" | "Standard" | "Bulk") => void;
   onCancel: () => void;
 }) {
+  const [selectedTier, setSelectedTier] = useState<RestoreTier>("bulk");
+  const pricing = getRegionPricing(region || "us-east-1");
+  const sizeGb = totalSizeBytes / (1024 * 1024 * 1024);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-sm rounded-lg bg-background p-6 shadow-lg">
+      <div className="w-full max-w-md rounded-lg bg-background p-6 shadow-lg">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Confirm Restore</h2>
+          <h2 className="text-lg font-semibold">Restore Files</h2>
           <button onClick={onCancel} className="text-muted-foreground hover:text-foreground">
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        <div className="space-y-3 mb-6">
-          <p className="text-sm">
-            This will restore <span className="font-medium">{fileCount} file{fileCount !== 1 ? "s" : ""}</span> ({size}) from Glacier Deep Archive.
-          </p>
-          <div className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-950/30 dark:text-amber-300 space-y-1">
-            <p>Restoration takes <span className="font-medium">12-48 hours</span> (Bulk tier).</p>
-            <p>Restored files stay available for <span className="font-medium">7 days</span> before re-archiving.</p>
-            <p>AWS charges a retrieval fee per GB restored.</p>
-          </div>
+        <p className="text-sm mb-4">
+          Restore <span className="font-medium">{fileCount} file{fileCount !== 1 ? "s" : ""}</span> ({size}) from Glacier.
+        </p>
+
+        <div className="space-y-2 mb-4">
+          {TIER_KEYS.map(({ key, label }) => {
+            const tier = pricing.restore[key];
+            const cost = sizeGb * tier.perGB + (fileCount / 1000) * tier.perRequest;
+            const isSelected = selectedTier === key;
+            return (
+              <button
+                key={key}
+                onClick={() => setSelectedTier(key)}
+                className={`w-full rounded-lg border px-4 py-3 text-left transition-colors ${
+                  isSelected
+                    ? "border-amber-500 bg-amber-500/10"
+                    : "hover:bg-accent/50"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-sm font-medium">{label}</span>
+                    <p className="text-xs text-muted-foreground">{tier.time}</p>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-sm font-semibold">
+                      {cost === 0 ? "Free" : `~$${cost < 0.01 ? "<0.01" : cost.toFixed(2)}`}
+                    </span>
+                    <p className="text-xs text-muted-foreground">
+                      {tier.perGB === 0 ? "No retrieval fee" : `$${tier.perGB}/GB`}
+                    </p>
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground mb-4 space-y-1">
+          <p>Restored files stay available for <span className="font-medium">7 days</span> before re-archiving.</p>
+          <p>Costs are estimates based on AWS {pricing.shortLabel} pricing as of {PRICING_DATE}.</p>
         </div>
 
         <div className="flex gap-2">
@@ -458,12 +476,12 @@ function RestoreConfirmModal({
             Cancel
           </button>
           <button
-            onClick={onConfirm}
+            onClick={() => onConfirm(selectedTier.charAt(0).toUpperCase() + selectedTier.slice(1) as "Expedited" | "Standard" | "Bulk")}
             className="flex-1 rounded-md bg-amber-500 py-2 text-sm font-medium text-white hover:bg-amber-600"
           >
             <span className="flex items-center justify-center gap-1.5">
               <Pickaxe className="h-3.5 w-3.5" />
-              Start Restore
+              Restore
             </span>
           </button>
         </div>
