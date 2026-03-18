@@ -7,7 +7,12 @@ export default auth((req) => {
   const isPublic = pathname === "/login"
     || pathname.startsWith("/api/auth")
     || pathname.startsWith("/.well-known")
-    || pathname.startsWith("/api/webhooks");
+    || pathname.startsWith("/api/webhooks")
+    || pathname === "/about"
+    || pathname === "/pricing"
+    || pathname === "/privacy"
+    || pathname === "/setup"
+    || pathname === "/changelog";
   if (isPublic) return NextResponse.next();
 
   // Not logged in — redirect pages to /login, return 401 for APIs
