@@ -2,8 +2,9 @@
 
 import { useState, useCallback } from "react";
 import { Upload, FolderUp, X } from "lucide-react";
-import { formatFileSize } from "@/lib/file-utils";
+import { formatFileSize, getFileType } from "@/lib/file-utils";
 import { canGenerateThumbnail, generateImageThumbnail } from "@/lib/preview-generator";
+import { useS3 } from "@/hooks/use-s3";
 
 interface UploadDialogProps {
   folderPath: string;
@@ -22,6 +23,7 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
+  const s3 = useS3();
 
   const processFileList = useCallback((fileList: FileList | File[]) => {
     const arr = Array.from(fileList);
@@ -54,6 +56,7 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
   async function uploadFiles() {
     setUploading(true);
     setError("");
+    let anySuccess = false;
 
     for (let i = 0; i < files.length; i++) {
       const { file, relativePath } = files[i];
@@ -63,28 +66,42 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
       );
 
       try {
-        const res = await fetch("/api/archive/upload", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            fileName: relativePath,
-            contentType: file.type || "application/octet-stream",
-            folderPath,
-          }),
-        });
+        const contentType = file.type || "application/octet-stream";
 
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data.error || `Upload failed (${res.status})`);
+        // Decode to ensure literal characters in S3 keys, not URL-encoded
+        const decodedFolder = folderPath ? decodeURIComponent(folderPath) : "";
+
+        // Determine if uploading to instant/ folder
+        const isInstant = decodedFolder === "instant" || decodedFolder.startsWith("instant/");
+        const prefix = isInstant ? "instant" : "originals";
+        const subPath = isInstant ? decodedFolder.replace(/^instant\/?/, "") : decodedFolder;
+        const key = `${prefix}/${subPath ? subPath + "/" : ""}${relativePath}`;
+
+        // Preserve original file metadata
+        const metadata: Record<string, string> = {};
+        if (file.lastModified) {
+          metadata["original-last-modified"] = new Date(file.lastModified).toISOString();
         }
 
-        const { url, previewUrl } = await res.json();
+        // Get presigned PUT URL from client-side S3
+        const url = await s3.getPresignedPutUrl(
+          key,
+          contentType,
+          Object.keys(metadata).length > 0 ? metadata : undefined
+        );
+
+        // Get preview presigned URL for non-instant images
+        let previewUrl: string | null = null;
+        if (!isInstant && getFileType(relativePath) === "image") {
+          const previewKey = key.replace(/^originals\//, "previews/");
+          previewUrl = await s3.getPresignedPutUrl(previewKey, "image/webp");
+        }
 
         // Upload directly to S3 via presigned PUT
         await new Promise<void>((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open("PUT", url);
-          xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+          xhr.setRequestHeader("Content-Type", contentType);
 
           xhr.upload.onprogress = (e) => {
             if (e.lengthComputable) {
@@ -101,6 +118,7 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
         });
 
         // Generate and upload thumbnail for supported image types
+        let previewSize: number | null = null;
         if (previewUrl && canGenerateThumbnail(file)) {
           try {
             const thumbnail = await generateImageThumbnail(file);
@@ -109,12 +127,27 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
               headers: { "Content-Type": thumbnail.type },
               body: thumbnail,
             });
+            previewSize = thumbnail.size;
           } catch (err) {
             // Thumbnail upload is best-effort; don't fail the overall upload
             console.warn("Thumbnail generation/upload failed:", err);
           }
         }
 
+        // Track in DB
+        await fetch("/api/archive/upload/confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            key,
+            size: file.size,
+            contentType,
+            originalDate: file.lastModified ? new Date(file.lastModified).toISOString() : null,
+            previewSize,
+          }),
+        });
+
+        anySuccess = true;
         setFiles((prev) =>
           prev.map((f, j) => (j === i ? { ...f, status: "done", progress: 100 } : f))
         );
@@ -128,13 +161,9 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
     }
 
     setUploading(false);
-    // Only notify parent if at least one file succeeded
-    setFiles((prev) => {
-      if (prev.some((f) => f.status === "done")) {
-        onUploadComplete();
-      }
-      return prev;
-    });
+    if (anySuccess) {
+      onUploadComplete();
+    }
   }
 
   const doneCount = files.filter((f) => f.status === "done").length;
@@ -142,7 +171,7 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-lg rounded-lg bg-background p-6 shadow-lg">
+      <div className="w-full max-w-lg rounded-lg border bg-background/80 backdrop-blur-xl p-6 shadow-lg">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Upload</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
@@ -226,7 +255,9 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
             </div>
 
             {error && (
-              <p className="text-sm text-destructive">{error}</p>
+              <div className="rounded-md bg-red-100 px-4 py-3 text-sm font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
+                {error}
+              </div>
             )}
 
             <div className="flex gap-2">

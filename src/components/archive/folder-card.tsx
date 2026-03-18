@@ -1,26 +1,38 @@
 "use client";
 
-import Link from "next/link";
-import { Folder } from "lucide-react";
+import { Folder, Pin, Zap } from "lucide-react";
 
 interface FolderCardProps {
   name: string;
   path: string;
+  selected?: boolean;
+  pinned?: boolean;
+  variant?: "default" | "instant";
+  onClick?: (e: React.MouseEvent) => void;
+  onDoubleClick?: () => void;
 }
 
-export function FolderCard({ name, path }: FolderCardProps) {
-  // Convert S3 prefix to URL path: "originals/2024/trips/" -> "/2024/trips"
-  const urlPath = path
-    .replace(/^originals\//, "")
-    .replace(/\/$/, "");
+export function FolderCard({ name, selected, pinned, variant = "default", onClick, onDoubleClick }: FolderCardProps) {
+  const isInstant = variant === "instant";
 
   return (
-    <Link
-      href={`/${urlPath}`}
-      className="group flex flex-col items-center gap-2 rounded-lg border border-transparent p-4 transition-colors hover:border-border hover:bg-accent"
+    <div
+      onClick={(e) => { e.stopPropagation(); onClick?.(e); }}
+      onDoubleClick={onDoubleClick}
+      className={`group relative inline-flex items-center rounded-md transition-colors cursor-pointer select-none ${
+        isInstant
+          ? `gap-2 px-4 py-2.5 ${selected ? "bg-emerald-500/20 ring-2 ring-emerald-500 dark:bg-emerald-500/25" : "bg-emerald-500/10 hover:bg-emerald-500/15"}`
+          : `gap-2 px-3.5 py-2 ${selected ? "bg-blue-500/15 ring-2 ring-blue-500 dark:bg-blue-500/20" : "bg-blue-500/8 hover:bg-blue-500/15"}`
+      }`}
     >
-      <Folder className="h-12 w-12 text-blue-500 transition-transform group-hover:scale-105" />
-      <span className="text-sm font-medium text-center truncate w-full">{name}</span>
-    </Link>
+      {pinned && (
+        <Pin className="absolute -top-1.5 -right-1.5 h-3.5 w-3.5 text-muted-foreground rotate-45" />
+      )}
+      <Folder className={`shrink-0 ${isInstant ? "h-5 w-5 text-emerald-400" : "h-4.5 w-4.5 text-blue-400"}`} />
+      {isInstant && (
+        <Zap className="h-3 w-3 -ml-1.5 text-amber-400 shrink-0" />
+      )}
+      <span className={`font-medium ${isInstant ? "text-sm" : "text-xs"}`}>{decodeURIComponent(name)}</span>
+    </div>
   );
 }

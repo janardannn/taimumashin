@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getPrisma } from "@/lib/db";
-import { deleteObject } from "@/lib/s3-operations";
 
+// DB-only: S3 deletions are handled client-side via useS3 hook
 export async function POST(req: Request) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -10,44 +10,50 @@ export async function POST(req: Request) {
   }
 
   const prisma = await getPrisma();
-  const user = await prisma.user.findUnique({
-    where: { id: session.user.id },
-    select: { roleArn: true, bucketName: true, region: true },
-  });
-
-  if (!user?.roleArn || !user?.bucketName || !user?.region) {
-    return NextResponse.json({ error: "AWS not configured" }, { status: 400 });
-  }
-
   const body = await req.json();
-  const { key } = body;
+  const { key, prefix } = body;
 
-  if (!key) {
-    return NextResponse.json({ error: "Missing key" }, { status: 400 });
-  }
-
-  const config = {
-    roleArn: user.roleArn,
-    userId: session.user.id,
-    bucketName: user.bucketName,
-    region: user.region,
-  };
-
-  // Delete original
-  await deleteObject(config, key);
-
-  // Delete preview (originals/ -> previews/)
-  const previewKey = key.replace(/^originals\//, "previews/");
   try {
-    await deleteObject(config, previewKey);
-  } catch {
-    // Preview might not exist
+    if (key) {
+      await prisma.file.deleteMany({
+        where: { userId: session.user.id, s3Key: key },
+      });
+
+      return NextResponse.json({ success: true });
+    }
+
+    if (prefix) {
+      const folderPath = prefix.replace(/^(originals|instant)\//, "").replace(/\/$/, "");
+
+      await prisma.file.deleteMany({
+        where: { userId: session.user.id, s3Key: { startsWith: prefix } },
+      });
+      await prisma.folder.deleteMany({
+        where: {
+          userId: session.user.id,
+          OR: [
+            { path: folderPath },
+            { path: { startsWith: `${folderPath}/` } },
+          ],
+        },
+      });
+      await prisma.restoreJob.deleteMany({
+        where: {
+          userId: session.user.id,
+          OR: [
+            { folderPath },
+            { folderPath: { startsWith: `${folderPath}/` } },
+          ],
+        },
+      });
+
+      return NextResponse.json({ success: true });
+    }
+
+    return NextResponse.json({ error: "Provide key or prefix" }, { status: 400 });
+  } catch (err) {
+    console.error("Delete error:", err);
+    const message = err instanceof Error ? err.message : "Delete failed";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
-
-  // Delete from Neon
-  await prisma.file.deleteMany({
-    where: { userId: session.user.id, s3Key: key },
-  });
-
-  return NextResponse.json({ success: true });
 }

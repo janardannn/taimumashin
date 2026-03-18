@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { X } from "lucide-react";
+import { useS3 } from "@/hooks/use-s3";
 
 interface CreateFolderDialogProps {
   parentPath: string;
@@ -13,6 +14,7 @@ export function CreateFolderDialog({ parentPath, onClose, onCreated }: CreateFol
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const s3 = useS3();
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -22,10 +24,22 @@ export function CreateFolderDialog({ parentPath, onClose, onCreated }: CreateFol
     setError("");
 
     try {
+      const trimmedName = name.trim();
+
+      // Build the S3 marker key (mirrors server-side logic)
+      const isInstant = parentPath === "instant" || parentPath.startsWith("instant/");
+      const prefix = isInstant ? "instant" : "originals";
+      const subPath = isInstant ? parentPath.replace(/^instant\/?/, "") : parentPath;
+      const markerKey = `${prefix}/${subPath ? subPath + "/" : ""}${trimmedName}/`;
+
+      // Create S3 folder marker directly from the client
+      await s3.putObject(markerKey, "", "application/x-directory");
+
+      // Track in DB via server route (server will skip S3 operations)
       const res = await fetch("/api/archive/folder", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), parentPath }),
+        body: JSON.stringify({ name: trimmedName, parentPath }),
       });
 
       if (!res.ok) {
@@ -45,7 +59,7 @@ export function CreateFolderDialog({ parentPath, onClose, onCreated }: CreateFol
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-sm rounded-lg bg-background p-6 shadow-lg">
+      <div className="w-full max-w-sm rounded-lg border bg-background/80 backdrop-blur-xl p-6 shadow-lg">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">New Folder</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
@@ -63,11 +77,15 @@ export function CreateFolderDialog({ parentPath, onClose, onCreated }: CreateFol
             className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          {error && (
+            <div className="rounded-md bg-red-100 px-4 py-3 text-sm font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
+              {error}
+            </div>
+          )}
 
           <button
             type="submit"
-            disabled={loading || !name.trim()}
+            disabled={loading || !name.trim() || !s3.ready}
             className="w-full rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             {loading ? "Creating..." : "Create Folder"}
