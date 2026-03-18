@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useCallback, useState } from "react";
-import { X, Download, FileText, File as FileIcon, Snowflake, Sun } from "lucide-react";
-import { formatFileSize, getFileType, formatDate } from "@/lib/file-utils";
+import { X, Download, FileText, File as FileIcon, Image as ImageIcon, Film, Music, Archive, Snowflake, Sun } from "lucide-react";
+import { formatFileSize, getFileType, getFileExtension, formatDate } from "@/lib/file-utils";
 import { useS3 } from "@/hooks/use-s3";
 
 interface FileViewerProps {
@@ -121,47 +121,42 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={onClose}>
       <div
-        className="relative flex max-h-[90vh] w-full max-w-4xl flex-col rounded-lg border bg-background/80 backdrop-blur-xl shadow-2xl"
+        className="relative flex max-h-[90vh] w-full max-w-4xl flex-col rounded-lg border border-[var(--panel-border)] bg-[var(--panel-bg)] backdrop-blur-xl shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between border-b px-4 py-3">
+        <div className="flex items-center justify-between border-b border-[var(--panel-border)] px-4 py-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <p className="text-sm font-medium truncate">{file.name}</p>
               {!loading && source && (
-                <span className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                <span className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
                   source === "original"
                     ? "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300"
                     : "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
                 }`}>
-                  {source === "original" ? (
-                    <><Sun className="h-3 w-3" /> Original</>
-                  ) : (
-                    <><Snowflake className="h-3 w-3" /> Preview</>
-                  )}
+                  {source === "original" ? "Original" : "Preview"}
                 </span>
               )}
             </div>
             <p className="text-xs text-muted-foreground">
               {formatFileSize(file.size)}
-              {file.lastModified && ` — ${formatDate(file.lastModified)}`}
-              {file.storageClass === "DEEP_ARCHIVE" && " — Glacier Deep Archive"}
+              {file.lastModified && ` · ${formatDate(file.lastModified)}`}
+              {file.storageClass && ` · ${humanStorageClass(file.storageClass)}`}
             </p>
           </div>
           <div className="flex items-center gap-2 ml-4">
-            {/* Only show download for originals, not previews */}
             {viewUrl && source === "original" && (
               <a
                 href={viewUrl}
                 download={file.name}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm hover:bg-accent"
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--glass-border)] bg-[var(--glass-bg)] px-3 text-xs hover:bg-[var(--glass-hover)] transition-colors"
               >
                 <Download className="h-3.5 w-3.5" />
                 Download
               </a>
             )}
-            <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+            <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
               <X className="h-5 w-5" />
             </button>
           </div>
@@ -189,8 +184,10 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
               className="mx-auto max-h-[70vh] rounded-md"
             />
           ) : viewUrl && fileType === "audio" ? (
-            <div className="flex flex-col items-center justify-center gap-4 py-20">
-              <FileIcon className="h-16 w-16 text-muted-foreground" />
+            <div className="flex flex-col items-center justify-center gap-6 py-16">
+              <div className="flex h-20 w-20 items-center justify-center rounded-xl bg-muted/80">
+                <Music className="h-10 w-10 text-muted-foreground/60" />
+              </div>
               <audio src={viewUrl} controls className="w-full max-w-md" />
             </div>
           ) : viewUrl && isViewable ? (
@@ -243,25 +240,75 @@ function TextViewer({ url }: { url: string }) {
   );
 }
 
+const typeDetailIcons = {
+  image: ImageIcon,
+  video: Film,
+  audio: Music,
+  document: FileText,
+  other: FileIcon,
+};
+
 function FileDetailsView({ file }: { file: FileViewerProps["file"] }) {
+  const fileType = getFileType(file.name);
+  const ext = getFileExtension(file.name);
+  const Icon = typeDetailIcons[fileType];
+  const isArchived = file.storageClass === "GLACIER" || file.storageClass === "DEEP_ARCHIVE";
+
   return (
-    <div className="flex flex-col items-center justify-center gap-4 py-20">
-      <FileText className="h-16 w-16 text-muted-foreground" />
-      <div className="text-center space-y-1">
-        <p className="text-sm font-medium">{file.name}</p>
-        <p className="text-xs text-muted-foreground">{formatFileSize(file.size)}</p>
-        {file.lastModified && (
-          <p className="text-xs text-muted-foreground">Modified {formatDate(file.lastModified)}</p>
-        )}
-        {file.storageClass && (
-          <p className="text-xs text-muted-foreground">Storage: {file.storageClass}</p>
-        )}
-        {file.storageClass === "DEEP_ARCHIVE" && !file.previewUrl && (
-          <p className="text-xs text-muted-foreground mt-2">
-            This file is archived in Glacier Deep Archive. Restore the folder to view it.
-          </p>
+    <div className="flex flex-col items-center justify-center gap-6 py-16">
+      {/* Extension badge + icon */}
+      <div className="relative">
+        <div className="flex h-20 w-20 items-center justify-center rounded-xl bg-muted/80">
+          <Icon className="h-10 w-10 text-muted-foreground/60" />
+        </div>
+        {ext && (
+          <span className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 rounded-md bg-foreground/10 px-2 py-0.5 text-[10px] font-mono font-medium uppercase tracking-wide text-muted-foreground">
+            .{ext}
+          </span>
         )}
       </div>
+
+      {/* Details grid */}
+      <div className="grid grid-cols-2 gap-x-8 gap-y-2 text-xs">
+        <div>
+          <p className="text-muted-foreground/60">Size</p>
+          <p className="font-medium">{formatFileSize(file.size)}</p>
+        </div>
+        <div>
+          <p className="text-muted-foreground/60">Type</p>
+          <p className="font-medium capitalize">{fileType === "other" ? (ext || "Unknown") : fileType}</p>
+        </div>
+        {file.lastModified && (
+          <div>
+            <p className="text-muted-foreground/60">Modified</p>
+            <p className="font-medium">{formatDate(file.lastModified)}</p>
+          </div>
+        )}
+        {file.storageClass && (
+          <div>
+            <p className="text-muted-foreground/60">Storage</p>
+            <p className="font-medium">{humanStorageClass(file.storageClass)}</p>
+          </div>
+        )}
+      </div>
+
+      {/* Archive hint */}
+      {isArchived && (
+        <p className="max-w-xs text-center text-xs text-muted-foreground">
+          This file is in {file.storageClass === "DEEP_ARCHIVE" ? "Glacier Deep Archive" : "Glacier"}. Restore the folder to download it.
+        </p>
+      )}
     </div>
   );
+}
+
+function humanStorageClass(sc: string): string {
+  switch (sc) {
+    case "GLACIER": return "Glacier Flexible";
+    case "DEEP_ARCHIVE": return "Glacier Deep Archive";
+    case "STANDARD": return "Standard";
+    case "STANDARD_IA": return "Standard-IA";
+    case "INTELLIGENT_TIERING": return "Intelligent-Tiering";
+    default: return sc;
+  }
 }
