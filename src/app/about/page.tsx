@@ -17,13 +17,12 @@ export default async function AboutPage() {
           <div className="space-y-3">
             <p className="text-foreground text-base">
               A personal file archival app that puts a clean interface on top of your
-              own AWS S3 bucket. You get Glacier cold storage pricing ($3.60/TB/month)
-              without ever touching the AWS Console after initial setup.
+              own AWS bucket.
             </p>
             <p>
               The name comes from the Japanese word for &quot;time machine&quot;. The idea is
               simple: throw your files into the archive, forget about them, and pull
-              them back out when you need them. Like a time capsule, but with a search bar.
+              them back out when you need them. Like a time capsule, but on your own AWS account.
             </p>
           </div>
 
@@ -61,7 +60,7 @@ export default async function AboutPage() {
               to anyone who isn&apos;t an infrastructure engineer though, so
               taimumashin puts a clean file browser on top of all of this.
               I know S3 browsers already exist (Cyberduck, Mountain Duck,
-              S3 Browser, Transmit) but none of them handle Glacier restore
+              S3 Browser, etc.) but none of them handle Glacier restore
               tiers, preview generation, or cost estimation the way I needed.
               Plus I had a Claude Max subscription, so why not.
             </p>
@@ -74,8 +73,10 @@ export default async function AboutPage() {
               If you decide to use this as your own storage solution: it&apos;s
               completely BYOA (Bring Your Own AWS). You set up your own bucket,
               your files never pass through our servers, and you can walk away
-              at any time by deleting a single CloudFormation stack. The app
-              has three layers:
+              at any time by deleting a single CloudFormation stack.
+            </p>
+            <p className="text-sm font-medium text-foreground">
+              The app has three layers:
             </p>
 
             <div className="space-y-4 pl-1">
