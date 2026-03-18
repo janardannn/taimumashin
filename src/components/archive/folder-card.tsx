@@ -8,7 +8,7 @@ interface FolderCardProps {
   selected?: boolean;
   pinned?: boolean;
   variant?: "default" | "instant";
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent) => void;
   onDoubleClick?: () => void;
 }
 
@@ -17,7 +17,7 @@ export function FolderCard({ name, selected, pinned, variant = "default", onClic
 
   return (
     <div
-      onClick={(e) => { e.stopPropagation(); onClick?.(); }}
+      onClick={(e) => { e.stopPropagation(); onClick?.(e); }}
       onDoubleClick={onDoubleClick}
       className={`group relative inline-flex items-center rounded-md transition-colors cursor-pointer select-none ${
         isInstant

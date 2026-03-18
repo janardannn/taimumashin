@@ -9,7 +9,7 @@ interface FileCardProps {
   storageClass?: string;
   previewUrl?: string | null;
   selected?: boolean;
-  onClick?: () => void;
+  onClick?: (e: React.MouseEvent) => void;
   onDoubleClick?: () => void;
 }
 
@@ -27,7 +27,7 @@ export function FileCard({ name, size, previewUrl, selected, onClick, onDoubleCl
 
   return (
     <div
-      onClick={(e) => { e.stopPropagation(); onClick?.(); }}
+      onClick={(e) => { e.stopPropagation(); onClick?.(e); }}
       onDoubleClick={onDoubleClick}
       className={`flex flex-col rounded-lg p-2 transition-colors cursor-pointer select-none ${
         selected ? "bg-accent" : "hover:bg-accent/50"

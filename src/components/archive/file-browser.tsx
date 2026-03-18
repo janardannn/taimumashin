@@ -99,8 +99,8 @@ export function FileBrowser({ path }: FileBrowserProps) {
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [error, setError] = useState("");
 
-  const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [selectedItems, setSelectedItems] = useState<Map<string, { type: "file" | "folder"; name: string }>>(new Map());
+  const lastClickedRef = useRef<string | null>(null);
   const [viewingFile, setViewingFile] = useState<S3File | null>(null);
   const { query: searchQuery, setQuery: setSearchQuery } = useSearch();
 
@@ -209,14 +209,58 @@ export function FileBrowser({ path }: FileBrowserProps) {
 
   const dateGroups = useMemo(() => groupByDate(filteredFolders, filteredFiles), [filteredFolders, filteredFiles]);
 
-  const handleBackgroundClick = useCallback(() => {
-    setSelectedFolder(null);
-    setSelectedFile(null);
-  }, []);
+  // Flat ordered list of all item keys for shift+click range selection
+  const flatItemKeys = useMemo(() => {
+    const keys: { key: string; type: "file" | "folder"; name: string }[] = [];
+    if (!path) keys.push({ key: "instant", type: "folder", name: "Instant" });
+    for (const group of dateGroups) {
+      for (const item of group.items) {
+        if (item.type === "folder") {
+          const f = item.data as S3Folder;
+          keys.push({ key: f.prefix, type: "folder", name: f.name });
+        } else {
+          const f = item.data as S3File;
+          keys.push({ key: f.key, type: "file", name: f.name });
+        }
+      }
+    }
+    return keys;
+  }, [path, dateGroups]);
 
-  const handleFolderClick = useCallback((prefix: string) => {
-    setSelectedFolder(prefix);
-    setSelectedFile(null);
+  const handleSelect = useCallback((key: string, type: "file" | "folder", name: string, e: React.MouseEvent) => {
+    if (e.metaKey || e.ctrlKey) {
+      // Toggle individual item
+      setSelectedItems(prev => {
+        const next = new Map(prev);
+        if (next.has(key)) next.delete(key);
+        else next.set(key, { type, name });
+        return next;
+      });
+      lastClickedRef.current = key;
+    } else if (e.shiftKey && lastClickedRef.current) {
+      // Range select
+      const lastIdx = flatItemKeys.findIndex(k => k.key === lastClickedRef.current);
+      const currIdx = flatItemKeys.findIndex(k => k.key === key);
+      if (lastIdx !== -1 && currIdx !== -1) {
+        const start = Math.min(lastIdx, currIdx);
+        const end = Math.max(lastIdx, currIdx);
+        setSelectedItems(prev => {
+          const next = new Map(prev);
+          for (let i = start; i <= end; i++) {
+            next.set(flatItemKeys[i].key, { type: flatItemKeys[i].type, name: flatItemKeys[i].name });
+          }
+          return next;
+        });
+      }
+    } else {
+      // Single select
+      setSelectedItems(new Map([[key, { type, name }]]));
+      lastClickedRef.current = key;
+    }
+  }, [flatItemKeys]);
+
+  const handleBackgroundClick = useCallback(() => {
+    setSelectedItems(new Map());
   }, []);
 
   const handleFolderDoubleClick = useCallback((prefix: string) => {
@@ -228,30 +272,18 @@ export function FileBrowser({ path }: FileBrowserProps) {
     }
   }, [router]);
 
-  const handleFileClick = useCallback((key: string) => {
-    setSelectedFile(key);
-    setSelectedFolder(null);
-  }, []);
-
   const handleFileDoubleClick = useCallback((file: S3File) => {
     setViewingFile(file);
   }, []);
 
-  const selection = useMemo(() => {
-    if (selectedFile) {
-      const file = files.find((f) => f.key === selectedFile);
-      if (file) return { type: "file" as const, name: file.name, key: file.key };
-    }
-    if (selectedFolder) {
-      const folder = folders.find((f) => f.prefix === selectedFolder);
-      if (folder) return { type: "folder" as const, name: folder.name, key: folder.prefix };
-    }
-    return null;
-  }, [selectedFile, selectedFolder, files, folders]);
+  const selections = useMemo(() => {
+    return Array.from(selectedItems.entries()).map(([key, { type, name }]) => ({
+      type, name, key,
+    }));
+  }, [selectedItems]);
 
   const handleDeleteComplete = useCallback(() => {
-    setSelectedFile(null);
-    setSelectedFolder(null);
+    setSelectedItems(new Map());
     loadContents();
   }, [loadContents]);
 
@@ -281,7 +313,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
               folderPath={decodedPath}
               stats={stats}
               restoreStatus={isInstantPath ? null : restoreStatus}
-              selection={selection}
+              selections={selections}
               onRestoreComplete={loadContents}
               onDeleteComplete={handleDeleteComplete}
               onNewFolder={() => setShowNewFolder(true)}
@@ -333,8 +365,8 @@ export function FileBrowser({ path }: FileBrowserProps) {
                   path="instant"
                   variant="instant"
                   pinned
-                  selected={selectedFolder === "instant"}
-                  onClick={() => handleFolderClick("instant")}
+                  selected={selectedItems.has("instant")}
+                  onClick={(e) => handleSelect("instant", "folder", "Instant", e)}
                   onDoubleClick={() => router.push("/instant")}
                 />
               </div>
@@ -348,16 +380,19 @@ export function FileBrowser({ path }: FileBrowserProps) {
                   <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{group.label}</h3>
                   {groupFolders.length > 0 && (
                     <div className="flex flex-wrap gap-x-3 gap-y-2">
-                      {groupFolders.map((item) => (
-                        <FolderCard
-                          key={item.data.prefix}
-                          name={(item.data as S3Folder).name}
-                          path={(item.data as S3Folder).prefix}
-                          selected={selectedFolder === (item.data as S3Folder).prefix}
-                          onClick={() => handleFolderClick((item.data as S3Folder).prefix)}
-                          onDoubleClick={() => handleFolderDoubleClick((item.data as S3Folder).prefix)}
-                        />
-                      ))}
+                      {groupFolders.map((item) => {
+                        const folder = item.data as S3Folder;
+                        return (
+                          <FolderCard
+                            key={folder.prefix}
+                            name={folder.name}
+                            path={folder.prefix}
+                            selected={selectedItems.has(folder.prefix)}
+                            onClick={(e) => handleSelect(folder.prefix, "folder", folder.name, e)}
+                            onDoubleClick={() => handleFolderDoubleClick(folder.prefix)}
+                          />
+                        );
+                      })}
                     </div>
                   )}
                   {groupFiles.length > 0 && (
@@ -371,8 +406,8 @@ export function FileBrowser({ path }: FileBrowserProps) {
                             size={file.size}
                             storageClass={file.storageClass}
                             previewUrl={file.previewUrl}
-                            selected={selectedFile === file.key}
-                            onClick={() => handleFileClick(file.key)}
+                            selected={selectedItems.has(file.key)}
+                            onClick={(e) => handleSelect(file.key, "file", file.name, e)}
                             onDoubleClick={() => handleFileDoubleClick(file)}
                           />
                         );

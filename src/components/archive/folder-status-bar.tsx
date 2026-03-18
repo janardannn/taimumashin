@@ -28,7 +28,7 @@ interface FolderStatusBarProps {
   folderPath: string;
   stats: FolderStats;
   restoreStatus: RestoreStatus | null;
-  selection: Selection | null;
+  selections: Selection[];
   onRestoreComplete: () => void;
   onDeleteComplete: () => void;
   onNewFolder: () => void;
@@ -41,7 +41,7 @@ export function FolderStatusBar({
   folderPath,
   stats,
   restoreStatus,
-  selection,
+  selections,
   onRestoreComplete,
   onDeleteComplete,
   onNewFolder,
@@ -151,7 +151,7 @@ export function FolderStatusBar({
   }
 
   async function handleDelete() {
-    if (!selection) return;
+    if (selections.length === 0) return;
     setShowDeleteConfirm(false);
     setDeleting(true);
     setError("");
@@ -162,61 +162,46 @@ export function FolderStatusBar({
         return;
       }
 
-      if (selection.type === "file") {
-        // Delete the file from S3
-        await s3.deleteObject(selection.key);
+      for (const sel of selections) {
+        if (sel.type === "file") {
+          await s3.deleteObject(sel.key);
 
-        // Try to delete the preview too
-        if (selection.key.startsWith("originals/")) {
-          const previewKey = selection.key.replace(/^originals\//, "previews/");
-          try {
-            await s3.deleteObject(previewKey);
-          } catch {
-            // Preview might not exist
+          if (sel.key.startsWith("originals/")) {
+            const previewKey = sel.key.replace(/^originals\//, "previews/");
+            try { await s3.deleteObject(previewKey); } catch { /* Preview might not exist */ }
           }
-        }
 
-        // Notify server for DB cleanup only
-        const res = await fetch("/api/archive/delete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key: selection.key }),
-        });
+          const res = await fetch("/api/archive/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: sel.key }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            setError(data.error || "Delete tracking failed");
+            return;
+          }
+        } else {
+          const objects = await listAllObjects(sel.key);
 
-        const data = await res.json();
-        if (!res.ok) {
-          setError(data.error || "Delete tracking failed");
-          return;
-        }
-      } else {
-        // Folder: list all objects recursively and delete each one
-        const objects = await listAllObjects(selection.key);
-
-        for (const obj of objects) {
-          await s3.deleteObject(obj.Key);
-
-          // Delete corresponding preview
-          if (obj.Key.startsWith("originals/")) {
-            const previewKey = obj.Key.replace(/^originals\//, "previews/");
-            try {
-              await s3.deleteObject(previewKey);
-            } catch {
-              // Preview might not exist
+          for (const obj of objects) {
+            await s3.deleteObject(obj.Key);
+            if (obj.Key.startsWith("originals/")) {
+              const previewKey = obj.Key.replace(/^originals\//, "previews/");
+              try { await s3.deleteObject(previewKey); } catch { /* Preview might not exist */ }
             }
           }
-        }
 
-        // Notify server for DB cleanup only
-        const res = await fetch("/api/archive/delete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prefix: selection.key }),
-        });
-
-        const data = await res.json();
-        if (!res.ok) {
-          setError(data.error || "Delete tracking failed");
-          return;
+          const res = await fetch("/api/archive/delete", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prefix: sel.key }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            setError(data.error || "Delete tracking failed");
+            return;
+          }
         }
       }
 
@@ -331,16 +316,22 @@ export function FolderStatusBar({
 
         {/* Right: selection actions + toolbar */}
         <div className="flex items-center gap-2">
-          {selection ? (
+          {selections.length > 0 ? (
             <>
               <div className="flex items-center gap-2 rounded-md bg-red-500/5 px-2.5 py-1">
                 <div className="flex items-center gap-1.5 text-xs">
-                  {selection.type === "folder" ? (
-                    <Folder className="h-3.5 w-3.5 text-red-400" />
+                  {selections.length === 1 ? (
+                    <>
+                      {selections[0].type === "folder" ? (
+                        <Folder className="h-3.5 w-3.5 text-red-400" />
+                      ) : (
+                        <FileIcon className="h-3.5 w-3.5 text-red-400" />
+                      )}
+                      <span className="font-medium max-w-[150px] truncate text-red-300">{selections[0].name}</span>
+                    </>
                   ) : (
-                    <FileIcon className="h-3.5 w-3.5 text-red-400" />
+                    <span className="font-medium text-red-300">{selections.length} items selected</span>
                   )}
-                  <span className="font-medium max-w-[150px] truncate text-red-300">{selection.name}</span>
                 </div>
                 <button
                   onClick={() => setShowDeleteConfirm(true)}
@@ -402,10 +393,9 @@ export function FolderStatusBar({
       )}
 
       {/* Delete confirm modal */}
-      {showDeleteConfirm && selection && (
+      {showDeleteConfirm && selections.length > 0 && (
         <DeleteConfirmModal
-          name={selection.name}
-          type={selection.type}
+          selections={selections}
           onConfirm={handleDelete}
           onCancel={() => setShowDeleteConfirm(false)}
         />
@@ -520,33 +510,41 @@ function RestoreConfirmModal({
 }
 
 function DeleteConfirmModal({
-  name,
-  type,
+  selections,
   onConfirm,
   onCancel,
 }: {
-  name: string;
-  type: "file" | "folder";
+  selections: Selection[];
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const count = selections.length;
+  const isSingle = count === 1;
+  const folderCount = selections.filter(s => s.type === "folder").length;
+  const fileCount = count - folderCount;
+
+  const itemLabel = isSingle
+    ? selections[0].type === "folder" ? "Folder" : "File"
+    : `${count} Items`;
+
+  const description = isSingle
+    ? <>Permanently delete <span className="font-medium">{selections[0].name}</span>{selections[0].type === "folder" ? " and all its contents" : ""}?</>
+    : <>Permanently delete <span className="font-medium">{fileCount > 0 ? `${fileCount} file${fileCount !== 1 ? "s" : ""}` : ""}{fileCount > 0 && folderCount > 0 ? " and " : ""}{folderCount > 0 ? `${folderCount} folder${folderCount !== 1 ? "s" : ""}` : ""}</span>?</>;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="w-full max-w-sm rounded-lg bg-background p-6 shadow-lg">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Delete {type === "folder" ? "Folder" : "File"}</h2>
+          <h2 className="text-lg font-semibold">Delete {itemLabel}</h2>
           <button onClick={onCancel} className="text-muted-foreground hover:text-foreground">
             <X className="h-5 w-5" />
           </button>
         </div>
 
         <div className="space-y-3 mb-6">
-          <p className="text-sm">
-            Permanently delete <span className="font-medium">{name}</span>
-            {type === "folder" ? " and all its contents" : ""}?
-          </p>
+          <p className="text-sm">{description}</p>
           <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 dark:bg-red-950/30 dark:text-red-300">
-            <p>This action cannot be undone. The {type} will be removed from S3 permanently.</p>
+            <p>This action cannot be undone. {isSingle ? `The ${selections[0].type}` : "These items"} will be removed from S3 permanently.</p>
           </div>
         </div>
 
@@ -563,7 +561,7 @@ function DeleteConfirmModal({
           >
             <span className="flex items-center justify-center gap-1.5">
               <Trash2 className="h-3.5 w-3.5" />
-              Delete
+              Delete{!isSingle ? ` (${count})` : ""}
             </span>
           </button>
         </div>
