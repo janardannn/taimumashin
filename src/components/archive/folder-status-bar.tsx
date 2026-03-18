@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download } from "lucide-react";
+import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download, FolderPlus, Upload } from "lucide-react";
 import { formatFileSize } from "@/lib/file-utils";
 import { useS3 } from "@/hooks/use-s3";
 import { getRegionPricing, PRICING_DATE, type RestoreTier } from "@/lib/pricing";
@@ -31,6 +31,8 @@ interface FolderStatusBarProps {
   selection: Selection | null;
   onRestoreComplete: () => void;
   onDeleteComplete: () => void;
+  onNewFolder: () => void;
+  onUpload: () => void;
   isInstant?: boolean;
   region?: string;
 }
@@ -42,6 +44,8 @@ export function FolderStatusBar({
   selection,
   onRestoreComplete,
   onDeleteComplete,
+  onNewFolder,
+  onUpload,
   isInstant,
   region,
 }: FolderStatusBarProps) {
@@ -270,7 +274,7 @@ export function FolderStatusBar({
   function ArchiveChip() {
     if (isInstant) {
       return (
-        <div className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 dark:border-amber-900 dark:bg-amber-950/30">
+        <div className="flex items-center gap-2 rounded-md bg-amber-50 px-3 py-1.5 dark:bg-amber-950/30">
           <Zap className="h-3.5 w-3.5 text-amber-500 shrink-0" />
           <span className="text-xs">
             {totalFiles} file{totalFiles !== 1 ? "s" : ""} ({sizeLabel}) — S3 Standard, always available, no restore wait
@@ -282,7 +286,7 @@ export function FolderStatusBar({
     if (restoreStatus && (restoreStatus.status === "PENDING" || restoreStatus.status === "RESTORING")) {
       const timeAgo = getTimeAgo(new Date(restoreStatus.requestedAt));
       return (
-        <div className="flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-1.5 dark:border-blue-900 dark:bg-blue-950/30">
+        <div className="flex items-center gap-2 rounded-md bg-blue-50 px-3 py-1.5 dark:bg-blue-950/30">
           <Pickaxe className="h-3.5 w-3.5 text-blue-600 animate-pulse" />
           <span className="text-xs">
             Thawing {restoreStatus.fileCount} file{restoreStatus.fileCount !== 1 ? "s" : ""} — {timeAgo}
@@ -295,7 +299,7 @@ export function FolderStatusBar({
 
     return (
       <div className="flex items-center gap-2">
-        <div className="flex items-center gap-2 rounded-md border px-3 py-1.5">
+        <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-1.5">
           <Snowflake className="h-3.5 w-3.5 text-blue-500" />
           <span className="text-xs">
             {totalFiles} file{totalFiles !== 1 ? "s" : ""} ({sizeLabel})
@@ -304,7 +308,7 @@ export function FolderStatusBar({
         <button
           onClick={() => setShowRestoreConfirm(true)}
           disabled={restoring}
-          className="inline-flex h-7 items-center gap-1.5 rounded-md bg-amber-500 px-2.5 text-xs font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+          className="inline-flex h-7 items-center gap-1.5 rounded-md bg-amber-500/15 px-2.5 text-xs font-medium text-amber-500 hover:bg-amber-500/25 disabled:opacity-50"
         >
           <Pickaxe className="h-3 w-3" />
           {restoring ? "..." : "Restore"}
@@ -321,48 +325,68 @@ export function FolderStatusBar({
         </div>
       )}
 
-      <div className="flex items-center justify-between rounded-lg border px-4 py-2.5">
+      <div className="flex items-center justify-between px-4 py-2 border-t border-[var(--panel-border)]">
         {/* Left: archive status */}
         <ArchiveChip />
 
-        {/* Right: selection actions */}
-        {selection ? (
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 text-sm">
-              {selection.type === "folder" ? (
-                <Folder className="h-4 w-4 text-blue-500" />
-              ) : (
-                <FileIcon className="h-4 w-4 text-muted-foreground" />
+        {/* Right: selection actions + toolbar */}
+        <div className="flex items-center gap-2">
+          {selection ? (
+            <>
+              <div className="flex items-center gap-2 rounded-md bg-red-500/5 px-2.5 py-1">
+                <div className="flex items-center gap-1.5 text-xs">
+                  {selection.type === "folder" ? (
+                    <Folder className="h-3.5 w-3.5 text-red-400" />
+                  ) : (
+                    <FileIcon className="h-3.5 w-3.5 text-red-400" />
+                  )}
+                  <span className="font-medium max-w-[150px] truncate text-red-300">{selection.name}</span>
+                </div>
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  disabled={deleting}
+                  className="inline-flex h-6 items-center gap-1 rounded-md px-2 text-xs font-medium bg-red-500/25 text-red-400 hover:bg-red-500/35 disabled:opacity-50"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Delete
+                </button>
+              </div>
+              <div className="h-4 w-px bg-border" />
+            </>
+          ) : (
+            <>
+              <span className="text-xs text-muted-foreground">
+                {totalFiles} item{totalFiles !== 1 ? "s" : ""}
+              </span>
+              {totalFiles > 0 && (availableCount > 0 || isInstant) && (
+                <button
+                  onClick={handleDownloadAll}
+                  disabled={downloading}
+                  className="inline-flex h-6 items-center gap-1 rounded px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+                  title="Download all files as ZIP"
+                >
+                  <Download className="h-3 w-3" />
+                  {downloading ? "..." : "ZIP"}
+                </button>
               )}
-              <span className="font-medium max-w-[200px] truncate">{selection.name}</span>
-            </div>
-            <button
-              onClick={() => setShowDeleteConfirm(true)}
-              disabled={deleting}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-red-100 hover:text-red-600 dark:hover:bg-red-950 dark:hover:text-red-400 disabled:opacity-50"
-              title="Delete"
-            >
-              <Trash2 className="h-4 w-4" />
-            </button>
-          </div>
-        ) : (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">
-              {totalFiles} item{totalFiles !== 1 ? "s" : ""}
-            </span>
-            {totalFiles > 0 && (availableCount > 0 || isInstant) && (
-              <button
-                onClick={handleDownloadAll}
-                disabled={downloading}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
-                title="Download all files as ZIP"
-              >
-                <Download className="h-3 w-3" />
-                {downloading ? "Zipping..." : "Download All"}
-              </button>
-            )}
-          </div>
-        )}
+              <div className="h-4 w-px bg-border" />
+            </>
+          )}
+          <button
+            onClick={onNewFolder}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--glass-border)] bg-[var(--glass-bg)] px-2.5 text-xs text-muted-foreground hover:bg-[var(--glass-hover)] hover:text-foreground transition-colors"
+          >
+            <FolderPlus className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">New Folder</span>
+          </button>
+          <button
+            onClick={onUpload}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+          >
+            <Upload className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Upload</span>
+          </button>
+        </div>
       </div>
 
       {/* Restore confirm modal */}

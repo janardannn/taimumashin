@@ -59,7 +59,7 @@ export function CreateFolderDialog({ parentPath, onClose, onCreated }: CreateFol
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-sm rounded-lg bg-background p-6 shadow-lg">
+      <div className="w-full max-w-sm rounded-lg border bg-background/80 backdrop-blur-xl p-6 shadow-lg">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">New Folder</h2>
           <button onClick={onClose} className="text-muted-foreground hover:text-foreground">

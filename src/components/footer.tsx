@@ -1,7 +1,7 @@
 export function Footer() {
   return (
     <footer className="border-t mt-auto">
-      <div className="mx-auto max-w-7xl px-4 py-6 flex items-center justify-between text-xs text-muted-foreground">
+      <div className="mx-auto max-w-7xl px-4 py-4 flex items-center justify-between text-[11px] text-muted-foreground">
         <p>&copy; {new Date().getFullYear()} janardannn</p>
         <a
           href="https://github.com/janardannn/taimumashin"

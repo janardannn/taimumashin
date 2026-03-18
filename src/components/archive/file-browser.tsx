@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { FolderPlus, Upload, RefreshCw } from "lucide-react";
+import { Upload, RefreshCw } from "lucide-react";
 import { FolderCard } from "./folder-card";
 import { FileCard } from "./file-card";
 import { FileViewer } from "./file-viewer";
@@ -11,6 +11,7 @@ import { CreateFolderDialog } from "./create-folder-dialog";
 import { BreadcrumbNav } from "./breadcrumb-nav";
 import { FolderStatusBar } from "./folder-status-bar";
 import { useS3 } from "@/hooks/use-s3";
+import { useSearch } from "@/components/search-context";
 
 interface S3Folder {
   name: string;
@@ -101,6 +102,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [viewingFile, setViewingFile] = useState<S3File | null>(null);
+  const { query: searchQuery, setQuery: setSearchQuery } = useSearch();
 
   const decodedPath = decodeURIComponent(path);
   const isInstantPath = decodedPath === "instant" || decodedPath.startsWith("instant/");
@@ -187,12 +189,25 @@ export function FileBrowser({ path }: FileBrowserProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run when s3 ready or files change
   }, [s3.ready, files.length, isInstantPath]);
 
-  // Reset preview cache when path changes
+  // Reset preview cache and search when path changes
   useEffect(() => {
     previewLoadedRef.current.clear();
-  }, [decodedPath]);
+    setSearchQuery("");
+  }, [decodedPath, setSearchQuery]);
 
-  const dateGroups = useMemo(() => groupByDate(folders, files), [folders, files]);
+  const filteredFolders = useMemo(() => {
+    if (!searchQuery) return folders;
+    const q = searchQuery.toLowerCase();
+    return folders.filter((f) => f.name.toLowerCase().includes(q));
+  }, [folders, searchQuery]);
+
+  const filteredFiles = useMemo(() => {
+    if (!searchQuery) return files;
+    const q = searchQuery.toLowerCase();
+    return files.filter((f) => f.name.toLowerCase().includes(q));
+  }, [files, searchQuery]);
+
+  const dateGroups = useMemo(() => groupByDate(filteredFolders, filteredFiles), [filteredFolders, filteredFiles]);
 
   const handleBackgroundClick = useCallback(() => {
     setSelectedFolder(null);
@@ -242,56 +257,25 @@ export function FileBrowser({ path }: FileBrowserProps) {
 
   return (
     <div className="space-y-4" onClick={handleBackgroundClick}>
-      <div className="flex items-center justify-between" onClick={(e) => e.stopPropagation()}>
-        <BreadcrumbNav path={path} />
-        <div className="flex items-center gap-2">
-          <button
-            onClick={loadContents}
-            className="inline-flex h-8 items-center justify-center rounded-md px-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-            title="Refresh"
-          >
-            <RefreshCw className="h-4 w-4" />
-          </button>
-          <button
-            onClick={() => setShowNewFolder(true)}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border px-3 text-sm font-medium hover:bg-accent"
-          >
-            <FolderPlus className="h-4 w-4" />
-            New Folder
-          </button>
-          <button
-            onClick={() => setShowUpload(true)}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-          >
-            <Upload className="h-4 w-4" />
-            Upload
-          </button>
-        </div>
-      </div>
-
       {(error || s3.error) && (
         <div className="rounded-md bg-red-100 px-4 py-3 text-sm font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
           {error || s3.error}
         </div>
       )}
 
-      {loading ? (
-        <div className="flex items-center justify-center py-20">
-          <RefreshCw className="h-5 w-5 animate-spin text-muted-foreground" />
-        </div>
-      ) : folders.length === 0 && files.length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
-          <p className="text-muted-foreground">This folder is empty</p>
+      {/* Breadcrumb + Status bar header */}
+      <div className="rounded-xl border border-[var(--panel-border)] bg-[var(--panel-bg)] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 py-2">
+          <BreadcrumbNav path={path} />
           <button
-            onClick={() => setShowUpload(true)}
-            className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            onClick={loadContents}
+            className="inline-flex h-6 items-center justify-center rounded px-1.5 text-muted-foreground hover:bg-[var(--glass-hover)] hover:text-foreground transition-colors"
+            title="Refresh"
           >
-            <Upload className="h-4 w-4" />
-            Upload files
+            <RefreshCw className="h-3.5 w-3.5" />
           </button>
         </div>
-      ) : (
-        <>
+        {!loading && (folders.length > 0 || files.length > 0) && (
           <div onClick={(e) => e.stopPropagation()}>
             <FolderStatusBar
               folderPath={decodedPath}
@@ -300,71 +284,113 @@ export function FileBrowser({ path }: FileBrowserProps) {
               selection={selection}
               onRestoreComplete={loadContents}
               onDeleteComplete={handleDeleteComplete}
+              onNewFolder={() => setShowNewFolder(true)}
+              onUpload={() => setShowUpload(true)}
               isInstant={isInstantPath}
               region={region}
             />
           </div>
+        )}
+      </div>
 
-          {!path && (
-            <div className="flex flex-wrap gap-x-3 gap-y-2">
-              <FolderCard
-                name="Instant"
-                path="instant"
-                variant="instant"
-                pinned
-                selected={selectedFolder === "instant"}
-                onClick={() => handleFolderClick("instant")}
-                onDoubleClick={() => router.push("/instant")}
-              />
+      <div className="rounded-xl border border-[var(--panel-border)] bg-[var(--panel-bg)] p-3 space-y-4 mt-2">
+        {loading ? (
+          <div className="space-y-4">
+            {/* Skeleton folder row */}
+            <div className="flex gap-3">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="h-12 w-40 animate-pulse rounded-lg bg-muted" />
+              ))}
             </div>
-          )}
-
-          {dateGroups.map((group) => {
-            const groupFolders = group.items.filter((i) => i.type === "folder");
-            const groupFiles = group.items.filter((i) => i.type === "file");
-            return (
-              <section key={group.label} className="space-y-5">
-                <div className="border-b pb-1">
-                  <h3 className="text-sm font-semibold text-muted-foreground">{group.label}</h3>
+            {/* Skeleton file grid */}
+            <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
+              {Array.from({ length: 8 }).map((_, i) => (
+                <div key={i} className="space-y-1.5">
+                  <div className="aspect-[4/3] animate-pulse rounded-md bg-muted" />
+                  <div className="h-3 w-3/4 animate-pulse rounded bg-muted" />
+                  <div className="h-2.5 w-1/2 animate-pulse rounded bg-muted" />
                 </div>
-                {groupFolders.length > 0 && (
-                  <div className="flex flex-wrap gap-x-3 gap-y-2">
-                    {groupFolders.map((item) => (
-                      <FolderCard
-                        key={item.data.prefix}
-                        name={(item.data as S3Folder).name}
-                        path={(item.data as S3Folder).prefix}
-                        selected={selectedFolder === (item.data as S3Folder).prefix}
-                        onClick={() => handleFolderClick((item.data as S3Folder).prefix)}
-                        onDoubleClick={() => handleFolderDoubleClick((item.data as S3Folder).prefix)}
-                      />
-                    ))}
-                  </div>
-                )}
-                {groupFiles.length > 0 && (
-                  <div className="grid grid-cols-3 gap-x-3 gap-y-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
-                    {groupFiles.map((item) => {
-                      const file = item.data as S3File;
-                      return (
-                        <FileCard
-                          key={file.key}
-                          name={file.name}
-                          size={file.size}
-                          storageClass={file.storageClass}
-                          previewUrl={file.previewUrl}
-                          selected={selectedFile === file.key}
-                          onClick={() => handleFileClick(file.key)}
-                          onDoubleClick={() => handleFileDoubleClick(file)}
+              ))}
+            </div>
+          </div>
+        ) : folders.length === 0 && files.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-3 py-20 text-center">
+            <p className="text-muted-foreground">This folder is empty</p>
+            <button
+              onClick={() => setShowUpload(true)}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              <Upload className="h-4 w-4" />
+              Upload files
+            </button>
+          </div>
+        ) : (
+          <>
+            {!path && (
+              <div className="flex flex-wrap gap-1">
+                <FolderCard
+                  name="Instant"
+                  path="instant"
+                  variant="instant"
+                  pinned
+                  selected={selectedFolder === "instant"}
+                  onClick={() => handleFolderClick("instant")}
+                  onDoubleClick={() => router.push("/instant")}
+                />
+              </div>
+            )}
+
+            {dateGroups.map((group) => {
+              const groupFolders = group.items.filter((i) => i.type === "folder");
+              const groupFiles = group.items.filter((i) => i.type === "file");
+              return (
+                <section key={group.label} className="space-y-3">
+                  <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{group.label}</h3>
+                  {groupFolders.length > 0 && (
+                    <div className="flex flex-wrap gap-x-3 gap-y-2">
+                      {groupFolders.map((item) => (
+                        <FolderCard
+                          key={item.data.prefix}
+                          name={(item.data as S3Folder).name}
+                          path={(item.data as S3Folder).prefix}
+                          selected={selectedFolder === (item.data as S3Folder).prefix}
+                          onClick={() => handleFolderClick((item.data as S3Folder).prefix)}
+                          onDoubleClick={() => handleFolderDoubleClick((item.data as S3Folder).prefix)}
                         />
-                      );
-                    })}
-                  </div>
-                )}
-              </section>
-            );
-          })}
-        </>
-      )}
+                      ))}
+                    </div>
+                  )}
+                  {groupFiles.length > 0 && (
+                    <div className="grid grid-cols-3 gap-x-3 gap-y-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
+                      {groupFiles.map((item) => {
+                        const file = item.data as S3File;
+                        return (
+                          <FileCard
+                            key={file.key}
+                            name={file.name}
+                            size={file.size}
+                            storageClass={file.storageClass}
+                            previewUrl={file.previewUrl}
+                            selected={selectedFile === file.key}
+                            onClick={() => handleFileClick(file.key)}
+                            onDoubleClick={() => handleFileDoubleClick(file)}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+
+            {searchQuery && dateGroups.length === 0 && (
+              <p className="py-8 text-center text-sm text-muted-foreground">
+                No results for &ldquo;{searchQuery}&rdquo;
+              </p>
+            )}
+          </>
+        )}
+      </div>
 
       {viewingFile && (
         <FileViewer
