@@ -1,0 +1,20 @@
+import { redirect } from "next/navigation";
+import { auth } from "@/lib/auth";
+import { Navbar } from "@/components/navbar";
+import { Footer } from "@/components/footer";
+import { PricingContent } from "./pricing-content";
+
+export default async function PricingPage() {
+  const session = await auth();
+  if (!session?.user?.id) redirect("/login");
+
+  return (
+    <div className="flex min-h-screen flex-col">
+      <Navbar user={session.user} />
+      <main className="mx-auto w-full max-w-4xl px-4 py-8 flex-1">
+        <PricingContent />
+      </main>
+      <Footer />
+    </div>
+  );
+}
