@@ -161,7 +161,7 @@ const STEPS: { title: string; body: React.ReactNode }[] = [
       <>
         If you don&apos;t have one, go to{" "}
         <A href="https://aws.amazon.com/free/">aws.amazon.com</A> and sign up.
-        You&apos;ll need an email and a credit card. Don&apos;t worry —
+        You&apos;ll need an email and a credit card. Don&apos;t worry,
         S3 Glacier Flexible Retrieval costs about <strong>$3.60 per TB/month</strong>, so
         storing 100 GB costs under $0.50/month.
       </>
@@ -172,12 +172,12 @@ const STEPS: { title: string; body: React.ReactNode }[] = [
     body: (
       <>
         CloudFormation is an AWS service that creates resources from a template
-        — think of it as a one-click installer. Before opening it,{" "}
+        (think of it as a one-click installer). Before opening it,{" "}
         <strong>select your preferred region</strong> from the dropdown in the{" "}
         <strong>top-right corner</strong> of the AWS Console (next to your
-        account name). Pick the region closest to you — e.g. &quot;Asia Pacific
-        (Mumbai)&quot; if you&apos;re in India, or &quot;US East (N. Virginia)&quot;
-        for the cheapest US pricing. Then open the{" "}
+        account name). Pick the region closest to you for faster uploads,
+        or the cheapest one (e.g. &quot;US East N. Virginia&quot;) to save on
+        storage. You can compare pricing below in the form. Then open the{" "}
         <A href="https://console.aws.amazon.com/cloudformation/home#/stacks/create">
           CloudFormation console
         </A>{" "}
@@ -198,7 +198,7 @@ const STEPS: { title: string; body: React.ReactNode }[] = [
         <code className="rounded bg-muted px-1 py-0.5 text-[11px]">
           taimumashin
         </code>
-        . On the next page, you&apos;ll be asked for parameters — use the
+        . On the next page, you&apos;ll be asked for parameters; use the
         values shown in the box below. Click <strong>Next</strong> through
         the remaining options. On the final review page, tick the{" "}
         <strong>&quot;I acknowledge that AWS CloudFormation might create IAM
@@ -227,7 +227,7 @@ const STEPS: { title: string; body: React.ReactNode }[] = [
         <code className="rounded bg-muted px-1 py-0.5 text-[11px] break-all">
           arn:aws:iam::123456789012:role/taimumashin-role
         </code>
-        . Copy this — it&apos;s what lets your browser access your bucket
+        . Copy this; it&apos;s what lets your browser access your bucket
         securely.
       </>
     ),
@@ -238,7 +238,7 @@ const STEPS: { title: string; body: React.ReactNode }[] = [
       <>
         In the same <strong>Outputs</strong> tab, copy the{" "}
         <strong>BucketName</strong> value. This is the S3 bucket the template
-        created — your files will be archived here.
+        created, where your files will be archived.
       </>
     ),
   },
@@ -355,12 +355,13 @@ export function OnboardingContent() {
           <div className="flex items-start gap-3">
             <KeyRound className="h-5 w-5 text-green-500 mt-0.5 shrink-0" />
             <div className="space-y-1">
-              <p className="text-sm font-medium">Zero-Trust BYOK</p>
+              <p className="text-sm font-medium">Zero-Trust BYOA (Bring Your Own AWS)</p>
               <p className="text-xs text-muted-foreground">
-                Your files live in your AWS account. All S3 operations happen
-                directly in your browser via OIDC — our server never has access
-                to your files. We only store metadata (file names, sizes) to
-                serve your dashboard.
+                The CloudFormation template creates an S3 bucket (where your files
+                live), an IAM Role with an OIDC trust (so your browser can talk to
+                S3 directly), and an SNS topic for restore notifications. Everything
+                lives in your AWS account, under your billing. We never store any
+                keys or secrets. To disconnect, just delete the CloudFormation stack.
               </p>
             </div>
           </div>
@@ -368,10 +369,10 @@ export function OnboardingContent() {
             <Shield className="h-5 w-5 text-blue-500 mt-0.5 shrink-0" />
             <div className="space-y-1">
               <p className="text-xs text-muted-foreground">
-                The CloudFormation template creates an OIDC trust — your browser
-                gets temporary credentials (1 hour) by presenting your login
-                token directly to AWS. Even the platform creator cannot access
-                your bucket.
+                When you log in, your browser presents your JWT to AWS via OIDC and
+                gets temporary credentials (1 hour). All uploads, downloads, and deletes
+                go straight from your browser to your S3 bucket. Our server never sees
+                your files; it only stores metadata for search and your dashboard.
               </p>
             </div>
           </div>
@@ -409,6 +410,7 @@ export function OnboardingContent() {
               placeholder="arn:aws:iam::123456789012:role/taimumashin-role"
               value={roleArn}
               onChange={(e) => setRoleArn(e.target.value)}
+              autoComplete="off"
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               required
             />
@@ -424,6 +426,7 @@ export function OnboardingContent() {
               placeholder="my-taimumashin-bucket"
               value={bucketName}
               onChange={(e) => setBucketName(e.target.value)}
+              autoComplete="off"
               className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               required
             />
@@ -441,7 +444,7 @@ export function OnboardingContent() {
             >
               {AWS_REGIONS.map((r) => (
                 <option key={r.value} value={r.value}>
-                  {r.label} ({r.value}) — ${r.glacierPerGB}/GB
+                  {r.label} ({r.value}) · ${r.glacierPerGB}/GB
                 </option>
               ))}
             </select>
@@ -498,7 +501,7 @@ export function OnboardingContent() {
                 </div>
               </div>
 
-              {/* CloudFormation parameters — shown after Step 3 (Upload template) */}
+              {/* CloudFormation parameters, shown after Step 3 (Upload template) */}
               {i === 2 && (
                 <div className="mt-3 ml-9 rounded-lg border border-primary/20 bg-primary/5 p-4 space-y-3">
                   <p className="text-xs font-semibold">CloudFormation Parameters</p>
@@ -511,7 +514,7 @@ export function OnboardingContent() {
                     <CopyField label="NotificationEmail" value="your email for restore alerts" />
                   </div>
                   <p className="text-[11px] text-muted-foreground">
-                    The remaining parameters (LifecycleDays, PreviewQuality, PreviewDurationCap) have sensible defaults — you can change them later in Settings.
+                    The remaining parameters (LifecycleDays, PreviewQuality, PreviewDurationCap) have sensible defaults; you can change them later in Settings.
                   </p>
                 </div>
               )}
