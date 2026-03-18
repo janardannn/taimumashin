@@ -56,7 +56,7 @@ export function PricingContent() {
               <tr className="border-b bg-muted/50 text-xs">
                 <th className="px-3 py-2 text-left font-medium">Data</th>
                 <th className="px-3 py-2 text-right font-medium">Glacier Flexible</th>
-                <th className="px-3 py-2 text-right font-medium">Previews (~8%)</th>
+                <th className="px-3 py-2 text-right font-medium">Previews · S3 Standard (~8%)</th>
                 <th className="px-3 py-2 text-right font-medium">Total/mo</th>
               </tr>
             </thead>

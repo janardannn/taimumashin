@@ -33,24 +33,52 @@ export default async function AboutPage() {
           <div className="space-y-3">
             <h2 className="text-lg font-semibold text-foreground">Why</h2>
             <p>
-              Cloud storage is either expensive (Google Drive, iCloud, Dropbox) or
-              complex (raw AWS). Glacier Flexible Retrieval is absurdly cheap for
-              long-term storage, but the AWS Console is hostile to casual use.
-              taimumashin bridges that gap: you get a familiar file browser, folder
-              organization, search, and one-click restore, all backed by your own
-              AWS account.
+              I (<a href="https://github.com/janardannn" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline">@janardannn</a>)
+              was hitting 175 GB on my iCloud 200 GB plan, with my iPhone sitting
+              at 117/128 GB. I had two options: upgrade to Apple&apos;s 2 TB plan
+              at &#8377;749/month, which would take years to fill since my data
+              grows at maybe 50-60 GB per year, or migrate to another cloud
+              provider and run into the same problem of rigid, oversized tiers
+              with no middle ground between 200 GB and 2 TB.
             </p>
             <p>
-              It&apos;s also a BYOA (Bring Your Own AWS) app. Your files never touch
-              our servers. You own the bucket, you own the data, and you can
-              disconnect at any time by deleting a single CloudFormation stack.
+              So I made a third option. I&apos;m a software engineer (or at
+              least I like to tell myself that), I wanted to learn
+              AWS more deeply, and I&apos;ve always thought the best way to
+              actually learn infrastructure is to build something you will
+              genuinely use.
+              My first thought was plain S3: pay-as-you-go, costs scale
+              proportionally with usage. Then I did some quick
+              math and S3 Standard at $0.023/GB adds up fast as data grows.
+              That led me to Glacier Deep Archive at $3.60/TB/month, absurdly
+              cheap, and I built the first version around it. But somewhere
+              down the line I realized the 12-48 hour retrieval window would
+              be brutal. I know myself well enough to know that someday at 3 AM
+              I will absolutely need a specific photo from a specific trip to
+              settle an argument or prove a point, and &quot;check back
+              tomorrow&quot; is not an answer. So I moved to Glacier Flexible
+              Retrieval: Expedited tier gets files back in 1-5 minutes when it&apos;s
+              urgent, Standard in 3-5 hours when it can wait, and Bulk for free
+              when there&apos;s no rush at all. The AWS Console is still hostile
+              to anyone who isn&apos;t an infrastructure engineer though, so
+              taimumashin puts a clean file browser on top of all of this.
+              I know S3 browsers already exist (Cyberduck, Mountain Duck,
+              S3 Browser, Transmit) but none of them handle Glacier restore
+              tiers, preview generation, or cost estimation the way I needed.
+              Plus I had a Claude Max subscription, so why not.
             </p>
           </div>
 
           {/* Architecture */}
           <div className="space-y-3">
             <h2 className="text-lg font-semibold text-foreground">Architecture</h2>
-            <p>The app has three layers:</p>
+            <p>
+              If you decide to use this as your own storage solution: it&apos;s
+              completely BYOA (Bring Your Own AWS). You set up your own bucket,
+              your files never pass through our servers, and you can walk away
+              at any time by deleting a single CloudFormation stack. The app
+              has three layers:
+            </p>
 
             <div className="space-y-4 pl-1">
               <div className="space-y-1.5">
@@ -107,10 +135,10 @@ export default async function AboutPage() {
               <div className="space-y-1.5">
                 <h3 className="text-sm font-medium text-foreground">Previews (S3 Standard)</h3>
                 <p>
-                  When you upload a file, a small preview copy is generated and stored
-                  in S3 Standard (always available). This powers the thumbnail grid in
-                  the file browser without needing to restore from Glacier. Previews
-                  are roughly 8% of the original data size.
+                  When you upload an image or video, a compressed preview copy is
+                  generated and stored in S3 Standard (always available). This powers
+                  the thumbnail grid in the file browser without needing to restore
+                  from Glacier. Previews are roughly 8% of the original data size.
                 </p>
               </div>
 
@@ -119,7 +147,7 @@ export default async function AboutPage() {
                 <p>
                   Files in the &quot;Instant&quot; folder skip the Glacier lifecycle entirely
                   and stay in S3 Standard. Useful for files you need to access
-                  frequently. More expensive ($0.023/GB/month) but always available
+                  frequently. More expensive (~$0.023/GB/month) but always available
                   with no restore wait.
                 </p>
               </div>

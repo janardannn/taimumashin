@@ -12,7 +12,7 @@ export async function POST(req: Request) {
 
   const prisma = await getPrisma();
   const body = await req.json();
-  const { folderPath, fileCount, totalSize } = body;
+  const { folderPath, fileCount, totalSize, tier, estimatedCost } = body;
 
   if (folderPath === undefined) {
     return NextResponse.json({ error: "Provide folderPath" }, { status: 400 });
@@ -23,6 +23,8 @@ export async function POST(req: Request) {
       data: {
         userId: session.user.id,
         folderPath: folderPath || "/",
+        tier: tier || null,
+        estimatedCost: estimatedCost != null ? estimatedCost : null,
         status: "RESTORING",
         fileCount: fileCount || 0,
         totalSize: BigInt(totalSize || 0),

@@ -118,6 +118,7 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
         });
 
         // Generate and upload thumbnail for supported image types
+        let previewSize: number | null = null;
         if (previewUrl && canGenerateThumbnail(file)) {
           try {
             const thumbnail = await generateImageThumbnail(file);
@@ -126,6 +127,7 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
               headers: { "Content-Type": thumbnail.type },
               body: thumbnail,
             });
+            previewSize = thumbnail.size;
           } catch (err) {
             // Thumbnail upload is best-effort; don't fail the overall upload
             console.warn("Thumbnail generation/upload failed:", err);
@@ -141,6 +143,7 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
             size: file.size,
             contentType,
             originalDate: file.lastModified ? new Date(file.lastModified).toISOString() : null,
+            previewSize,
           }),
         });
 

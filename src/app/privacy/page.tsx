@@ -17,7 +17,7 @@ export default async function PrivacyPage() {
           <div className="space-y-2">
             <h2 className="text-base font-semibold text-foreground">What we store</h2>
             <ul className="list-disc pl-5 space-y-1.5">
-              <li>Your GitHub profile (name, email, avatar URL) for authentication</li>
+              <li>Your OAuth profile (name, email, avatar URL) from GitHub or Google for authentication</li>
               <li>Your IAM Role ARN, S3 bucket name, and AWS region for credential exchange</li>
               <li>File metadata: names, sizes, types, folder paths, upload dates</li>
               <li>Folder structure and restore request history</li>
@@ -56,7 +56,7 @@ export default async function PrivacyPage() {
           <div className="space-y-2">
             <h2 className="text-base font-semibold text-foreground">Third parties</h2>
             <ul className="list-disc pl-5 space-y-1.5">
-              <li>GitHub (OAuth login)</li>
+              <li>GitHub / Google (OAuth login)</li>
               <li>AWS (your storage provider, under your account)</li>
               <li>Neon (Postgres hosting for metadata)</li>
               <li>Vercel (app hosting)</li>

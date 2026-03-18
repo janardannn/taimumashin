@@ -11,14 +11,19 @@ interface Stats {
   totalFiles: number;
   totalFolders: number;
   totalSize: number;
+  totalPreviewSize: number;
   activeRestores: number;
   restoresThisMonth: number;
   dataRestoredThisMonth: number;
+  retrievalCostThisMonth: number;
   region: string;
   recentRestores: {
     id: string;
     folderPath: string;
     status: string;
+    tier: string | null;
+    fileCount: number;
+    estimatedCost: number | null;
     requestedAt: string;
     restoredAt: string | null;
     expiresAt: string | null;
@@ -42,15 +47,18 @@ export function DashboardContent() {
     if (!stats) return null;
     const pricing = getRegionPricing(stats.region);
     const totalGB = stats.totalSize / (1024 * 1024 * 1024);
-    const previewGB = totalGB * PREVIEW_RATIO;
-    const restoredGB = stats.dataRestoredThisMonth / (1024 * 1024 * 1024);
-
+    // Use actual preview size if available, fall back to estimate for old files
+    const previewBytes = stats.totalPreviewSize > 0 ? stats.totalPreviewSize : stats.totalSize * PREVIEW_RATIO;
+    const previewGB = previewBytes / (1024 * 1024 * 1024);
     const storageCost = totalGB * pricing.glacierPerGB;
     const previewCost = previewGB * pricing.standardPerGB;
-    const retrievalCost = restoredGB * pricing.restore.standard.perGB;
+    // Use stored cost if available, fall back to estimate
+    const retrievalCost = stats.retrievalCostThisMonth > 0
+      ? stats.retrievalCostThisMonth
+      : (stats.dataRestoredThisMonth / (1024 * 1024 * 1024)) * pricing.restore.standard.perGB;
     const totalCost = storageCost + previewCost + retrievalCost;
 
-    return { storageCost, previewCost, retrievalCost, totalCost, restoredGB, pricing };
+    return { storageCost, previewCost, retrievalCost, totalCost, previewBytes, pricing };
   }, [stats]);
 
   if (!stats) {
@@ -116,7 +124,7 @@ export function DashboardContent() {
                 <div>
                   <p className="text-sm font-medium">S3 Standard (previews)</p>
                   <p className="text-xs text-muted-foreground">
-                    ~{formatFileSize(stats.totalSize * PREVIEW_RATIO)} @ ${costs.pricing.standardPerGB}/GB
+                    {stats.totalPreviewSize > 0 ? "" : "~"}{formatFileSize(costs.previewBytes)} @ ${costs.pricing.standardPerGB}/GB
                   </p>
                 </div>
               </div>
@@ -132,7 +140,7 @@ export function DashboardContent() {
                   <p className="text-sm font-medium">Retrievals this month</p>
                   <p className="text-xs text-muted-foreground">
                     {stats.restoresThisMonth} restore{stats.restoresThisMonth !== 1 ? "s" : ""}
-                    {costs.restoredGB > 0 && ` — ${costs.restoredGB.toFixed(1)}GB @ $${costs.pricing.restore.standard.perGB}/GB`}
+                    {stats.dataRestoredThisMonth > 0 && ` — ${formatFileSize(stats.dataRestoredThisMonth)}`}
                   </p>
                 </div>
               </div>
@@ -143,7 +151,7 @@ export function DashboardContent() {
           </div>
           <div className="px-4 py-2 bg-muted/20">
             <p className="text-xs text-muted-foreground">
-              Data transfer out is free under 100GB/month. Retrieval cost shown for Standard tier (3-5hr). Pricing as of {PRICING_DATE}.
+              Data transfer out is free under 100GB/month. Retrieval costs based on tier selected at restore time. Pricing as of {PRICING_DATE}.
             </p>
           </div>
         </div>
@@ -161,7 +169,10 @@ export function DashboardContent() {
                 <div>
                   <p className="text-sm font-medium">{job.folderPath}</p>
                   <p className="text-xs text-muted-foreground">
-                    Requested {new Date(job.requestedAt).toLocaleDateString("en-IN", {
+                    {job.fileCount} file{job.fileCount !== 1 ? "s" : ""}
+                    {job.tier && ` · ${job.tier.charAt(0).toUpperCase() + job.tier.slice(1)}`}
+                    {job.estimatedCost != null && job.estimatedCost > 0 && ` · ~$${job.estimatedCost < 0.01 ? job.estimatedCost.toFixed(4) : job.estimatedCost.toFixed(2)}`}
+                    {" · "}{new Date(job.requestedAt).toLocaleDateString("en-IN", {
                       day: "numeric", month: "short", year: "numeric",
                     })}
                   </p>
@@ -173,9 +184,9 @@ export function DashboardContent() {
                     ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
                     : "bg-muted text-muted-foreground"
                 }`}>
-                  {job.status === "READY" ? "\u2600\uFE0F Available" :
-                   job.status === "RESTORING" ? "\u26CF\uFE0F Restoring" :
-                   job.status === "EXPIRED" ? "\u2744\uFE0F Expired" :
+                  {job.status === "READY" ? "Available" :
+                   job.status === "RESTORING" ? "Restoring" :
+                   job.status === "EXPIRED" ? "Expired" :
                    job.status}
                 </span>
               </div>

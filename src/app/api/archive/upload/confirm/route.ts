@@ -10,7 +10,7 @@ export async function POST(req: Request) {
   }
 
   const body = await req.json();
-  const { key, size, contentType, originalDate } = body;
+  const { key, size, contentType, originalDate, previewSize } = body;
 
   if (!key) {
     return NextResponse.json({ error: "Missing key" }, { status: 400 });
@@ -66,6 +66,7 @@ export async function POST(req: Request) {
       type: contentType || "application/octet-stream",
       folderPath,
       originalDate: originalDate ? new Date(originalDate) : null,
+      previewSize: previewSize ? BigInt(previewSize) : null,
     },
   });
 

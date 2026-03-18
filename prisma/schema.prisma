@@ -89,8 +89,9 @@ model File {
   userId     String
   name       String
   s3Key      String
-  previewKey String?
-  size       BigInt
+  previewKey  String?
+  previewSize BigInt?
+  size        BigInt
   type       String
   folderPath   String
   originalDate DateTime?
@@ -122,9 +123,11 @@ model RestoreJob {
   id          String        @id @default(cuid())
   userId      String
   folderPath  String
-  status      RestoreStatus @default(PENDING)
-  fileCount   Int           @default(0)
-  totalSize   BigInt        @default(0)
+  tier          String?
+  estimatedCost Float?
+  status        RestoreStatus @default(PENDING)
+  fileCount     Int           @default(0)
+  totalSize     BigInt        @default(0)
   requestedAt DateTime      @default(now())
   restoredAt  DateTime?
   expiresAt   DateTime?

@@ -95,7 +95,7 @@ export function FolderStatusBar({
     return folderPath ? `originals/${folderPath}/` : "originals/";
   }
 
-  async function handleRestore(tier: "Expedited" | "Standard" | "Bulk") {
+  async function handleRestore(tier: "Expedited" | "Standard" | "Bulk", estimatedCost: number) {
     setShowRestoreConfirm(false);
     setRestoring(true);
     setError("");
@@ -133,7 +133,7 @@ export function FolderStatusBar({
       const res = await fetch("/api/archive/restore", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folderPath, fileCount, totalSize: totalSizeBytes }),
+        body: JSON.stringify({ folderPath, fileCount, totalSize: totalSizeBytes, tier: tier.toLowerCase(), estimatedCost }),
       });
 
       const data = await res.json();
@@ -416,7 +416,7 @@ function RestoreConfirmModal({
   totalSizeBytes: number;
   size: string;
   region?: string;
-  onConfirm: (tier: "Expedited" | "Standard" | "Bulk") => void;
+  onConfirm: (tier: "Expedited" | "Standard" | "Bulk", estimatedCost: number) => void;
   onCancel: () => void;
 }) {
   const [selectedTier, setSelectedTier] = useState<RestoreTier>("bulk");
@@ -489,7 +489,11 @@ function RestoreConfirmModal({
             Cancel
           </button>
           <button
-            onClick={() => onConfirm(selectedTier.charAt(0).toUpperCase() + selectedTier.slice(1) as "Expedited" | "Standard" | "Bulk")}
+            onClick={() => {
+              const tier = pricing.restore[selectedTier];
+              const cost = sizeGb * tier.perGB + (fileCount / 1000) * tier.perRequest;
+              onConfirm(selectedTier.charAt(0).toUpperCase() + selectedTier.slice(1) as "Expedited" | "Standard" | "Bulk", cost);
+            }}
             className="flex-1 rounded-md bg-amber-500 py-2 text-sm font-medium text-white hover:bg-amber-600"
           >
             <span className="flex items-center justify-center gap-1.5">
