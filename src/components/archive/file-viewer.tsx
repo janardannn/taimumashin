@@ -121,7 +121,7 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={onClose}>
       <div
-        className="relative flex max-h-[90vh] w-full max-w-4xl flex-col rounded-lg border border-[var(--panel-border)] bg-[var(--panel-bg)] backdrop-blur-xl shadow-2xl"
+        className="relative flex max-h-[90vh] w-full max-w-4xl flex-col rounded-lg border border-border bg-background shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

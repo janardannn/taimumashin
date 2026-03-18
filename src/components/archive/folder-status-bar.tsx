@@ -456,7 +456,9 @@ function RestoreConfirmModal({
         <div className="space-y-2 mb-4">
           {TIER_KEYS.map(({ key, label }) => {
             const tier = pricing.restore[key];
-            const cost = sizeGb * tier.perGB + (fileCount / 1000) * tier.perRequest;
+            const dataCost = sizeGb * tier.perGB;
+            const requestCost = (fileCount / 1000) * tier.perRequest;
+            const cost = dataCost + requestCost;
             const isSelected = selectedTier === key;
             return (
               <button
@@ -468,23 +470,22 @@ function RestoreConfirmModal({
                     : "hover:bg-accent/50"
                 }`}
               >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-sm font-medium">{label}</span>
-                    <p className="text-xs text-muted-foreground">{tier.time}</p>
-                  </div>
-                  <div className="text-right">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-sm font-medium">{label}</span>
+                      <p className="text-xs text-muted-foreground">{tier.time}</p>
+                    </div>
                     <span className="text-sm font-semibold">
                       {cost === 0 ? "Free" : `~$${cost < 0.01 ? "<0.01" : cost.toFixed(2)}`}
                     </span>
-                    <p className="text-xs text-muted-foreground">
-                      {tier.perGB === 0 && tier.perRequest === 0
-                        ? "No retrieval fee"
-                        : tier.perRequest === 0
-                          ? `$${tier.perGB}/GB`
-                          : `$${tier.perGB}/GB + $${tier.perRequest}/1K req`}
-                    </p>
                   </div>
+                  {cost > 0 && (
+                    <div className="text-[11px] text-muted-foreground space-y-0.5 mt-1">
+                      <p>${tier.perGB}/GB × {sizeGb.toFixed(2)} GB = {formatCostPart(dataCost)}</p>
+                      <p>${tier.perRequest}/1K req × {fileCount} files = {formatCostPart(requestCost)}</p>
+                    </div>
+                  )}
                 </div>
               </button>
             );
@@ -569,6 +570,12 @@ function DeleteConfirmModal({
       </div>
     </div>
   );
+}
+
+function formatCostPart(cost: number): string {
+  if (cost === 0) return "$0";
+  if (cost < 0.01) return "$<0.01";
+  return `$${cost.toFixed(2)}`;
 }
 
 function getTimeAgo(date: Date): string {

@@ -26,7 +26,7 @@ export function FolderCard({ name, selected, pinned, variant = "default", onClic
       }`}
     >
       {pinned && (
-        <Pin className="absolute -top-1 -right-1 h-2.5 w-2.5 text-muted-foreground rotate-45" />
+        <Pin className="absolute -top-1.5 -right-1.5 h-3.5 w-3.5 text-muted-foreground rotate-45" />
       )}
       <Folder className={`shrink-0 ${isInstant ? "h-5 w-5 text-emerald-400" : "h-4.5 w-4.5 text-blue-400"}`} />
       {isInstant && (
