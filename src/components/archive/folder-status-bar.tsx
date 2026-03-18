@@ -318,30 +318,24 @@ export function FolderStatusBar({
         <div className="flex items-center gap-2">
           {selections.length > 0 ? (
             <>
-              <div className="flex items-center gap-2 rounded-md bg-red-500/5 px-2.5 py-1">
-                <div className="flex items-center gap-1.5 text-xs">
-                  {selections.length === 1 ? (
-                    <>
-                      {selections[0].type === "folder" ? (
-                        <Folder className="h-3.5 w-3.5 text-red-400" />
-                      ) : (
-                        <FileIcon className="h-3.5 w-3.5 text-red-400" />
-                      )}
-                      <span className="font-medium max-w-[150px] truncate text-red-300">{selections[0].name}</span>
-                    </>
-                  ) : (
-                    <span className="font-medium text-red-300">{selections.length} items selected</span>
-                  )}
-                </div>
-                <button
-                  onClick={() => setShowDeleteConfirm(true)}
-                  disabled={deleting}
-                  className="inline-flex h-6 items-center gap-1 rounded-md px-2 text-xs font-medium bg-red-500/25 text-red-400 hover:bg-red-500/35 disabled:opacity-50"
-                >
-                  <Trash2 className="h-3 w-3" />
-                  Delete
-                </button>
-              </div>
+              <span className="inline-flex items-center gap-1.5 rounded-md bg-blue-500/10 ring-1 ring-blue-500/40 px-2.5 py-1 text-xs font-medium text-blue-700 dark:text-blue-300">
+                {selections.length === 1 ? (
+                  <>
+                    {selections[0].type === "folder" ? <Folder className="h-3 w-3 text-muted-foreground" /> : <FileIcon className="h-3 w-3 text-muted-foreground" />}
+                    <span className="max-w-[150px] truncate">{selections[0].name}</span>
+                  </>
+                ) : (
+                  <>{selections.length} items selected</>
+                )}
+              </span>
+              <button
+                onClick={() => setShowDeleteConfirm(true)}
+                disabled={deleting}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md bg-red-600 px-2.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 transition-colors"
+              >
+                <Trash2 className="h-3 w-3" />
+                Delete
+              </button>
               <div className="h-4 w-px bg-border" />
             </>
           ) : (
@@ -430,11 +424,11 @@ function RestoreConfirmModal({
   const sizeGb = totalSizeBytes / (1024 * 1024 * 1024);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-md rounded-lg bg-background p-6 shadow-lg">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onCancel}>
+      <div className="w-full max-w-md rounded-lg border border-border bg-background p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Restore Files</h2>
-          <button onClick={onCancel} className="text-muted-foreground hover:text-foreground">
+          <button onClick={onCancel} className="flex h-7 w-7 items-center justify-center rounded-md bg-muted-foreground/15 text-muted-foreground hover:bg-muted-foreground/30 hover:text-foreground cursor-pointer transition-colors">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -532,21 +526,21 @@ function DeleteConfirmModal({
     : <>Permanently delete <span className="font-medium">{fileCount > 0 ? `${fileCount} file${fileCount !== 1 ? "s" : ""}` : ""}{fileCount > 0 && folderCount > 0 ? " and " : ""}{folderCount > 0 ? `${folderCount} folder${folderCount !== 1 ? "s" : ""}` : ""}</span>?</>;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-sm rounded-lg bg-background p-6 shadow-lg">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onCancel}>
+      <div className="w-full max-w-lg rounded-xl border border-border bg-background p-8 shadow-lg" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Delete {itemLabel}</h2>
-          <button onClick={onCancel} className="text-muted-foreground hover:text-foreground">
+          <button onClick={onCancel} className="flex h-7 w-7 items-center justify-center rounded-md bg-muted-foreground/15 text-muted-foreground hover:bg-muted-foreground/30 hover:text-foreground cursor-pointer transition-colors">
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        <div className="space-y-3 mb-6">
+        <div className="space-y-4 mb-8">
           <p className="text-sm">{description}</p>
           {!isSingle && (
-            <ul className="max-h-32 overflow-auto rounded-md bg-muted/50 px-3 py-2 space-y-1">
-              {selections.slice(0, 20).map((s) => (
-                <li key={s.key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <ul className="max-h-48 overflow-auto rounded-lg bg-muted/50 px-4 py-3 space-y-2.5">
+              {selections.map((s) => (
+                <li key={s.key} className="flex items-center gap-1.5 text-xs text-muted-foreground" title={s.name}>
                   {s.type === "folder" ? (
                     <Folder className="h-3 w-3 shrink-0" />
                   ) : (
@@ -555,9 +549,6 @@ function DeleteConfirmModal({
                   <span className="truncate">{s.name}</span>
                 </li>
               ))}
-              {selections.length > 20 && (
-                <li className="text-xs text-muted-foreground/60">...and {selections.length - 20} more</li>
-              )}
             </ul>
           )}
           <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 dark:bg-red-950/30 dark:text-red-300">
@@ -565,16 +556,16 @@ function DeleteConfirmModal({
           </div>
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex gap-3">
           <button
             onClick={onCancel}
-            className="flex-1 rounded-md border py-2 text-sm font-medium hover:bg-accent"
+            className="flex-1 rounded-lg border py-2.5 text-sm font-medium hover:bg-accent transition-colors cursor-pointer"
           >
             Cancel
           </button>
           <button
             onClick={onConfirm}
-            className="flex-1 rounded-md bg-red-600 py-2 text-sm font-medium text-white hover:bg-red-700"
+            className="flex-1 rounded-lg bg-red-600 py-2.5 text-sm font-medium text-white hover:bg-red-700 transition-colors cursor-pointer"
           >
             <span className="flex items-center justify-center gap-1.5">
               <Trash2 className="h-3.5 w-3.5" />
