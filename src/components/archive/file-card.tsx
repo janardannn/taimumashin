@@ -30,7 +30,7 @@ export function FileCard({ name, size, previewUrl, selected, onClick, onDoubleCl
       onClick={(e) => { e.stopPropagation(); onClick?.(e); }}
       onDoubleClick={onDoubleClick}
       className={`flex flex-col rounded-lg p-2 transition-colors cursor-pointer select-none ${
-        selected ? "bg-accent" : "hover:bg-accent/50"
+        selected ? "bg-blue-500/15 ring-2 ring-blue-500 dark:bg-blue-500/20" : "hover:bg-accent/50"
       }`}
     >
       {/* Preview area */}

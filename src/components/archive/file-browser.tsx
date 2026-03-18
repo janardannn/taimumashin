@@ -277,9 +277,9 @@ export function FileBrowser({ path }: FileBrowserProps) {
   }, []);
 
   const selections = useMemo(() => {
-    return Array.from(selectedItems.entries()).map(([key, { type, name }]) => ({
-      type, name, key,
-    }));
+    return Array.from(selectedItems.entries())
+      .filter(([key]) => key !== "instant")
+      .map(([key, { type, name }]) => ({ type, name, key }));
   }, [selectedItems]);
 
   const handleDeleteComplete = useCallback(() => {

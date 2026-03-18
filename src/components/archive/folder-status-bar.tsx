@@ -543,6 +543,23 @@ function DeleteConfirmModal({
 
         <div className="space-y-3 mb-6">
           <p className="text-sm">{description}</p>
+          {!isSingle && (
+            <ul className="max-h-32 overflow-auto rounded-md bg-muted/50 px-3 py-2 space-y-1">
+              {selections.slice(0, 20).map((s) => (
+                <li key={s.key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  {s.type === "folder" ? (
+                    <Folder className="h-3 w-3 shrink-0" />
+                  ) : (
+                    <FileIcon className="h-3 w-3 shrink-0" />
+                  )}
+                  <span className="truncate">{s.name}</span>
+                </li>
+              ))}
+              {selections.length > 20 && (
+                <li className="text-xs text-muted-foreground/60">...and {selections.length - 20} more</li>
+              )}
+            </ul>
+          )}
           <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 dark:bg-red-950/30 dark:text-red-300">
             <p>This action cannot be undone. {isSingle ? `The ${selections[0].type}` : "These items"} will be removed from S3 permanently.</p>
           </div>

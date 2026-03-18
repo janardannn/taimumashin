@@ -21,8 +21,8 @@ export function FolderCard({ name, selected, pinned, variant = "default", onClic
       onDoubleClick={onDoubleClick}
       className={`group relative inline-flex items-center rounded-md transition-colors cursor-pointer select-none ${
         isInstant
-          ? `gap-2 px-4 py-2.5 ${selected ? "bg-emerald-500/20" : "bg-emerald-500/10 hover:bg-emerald-500/15"}`
-          : `gap-2 px-3.5 py-2 ${selected ? "bg-blue-500/20" : "bg-blue-500/8 hover:bg-blue-500/15"}`
+          ? `gap-2 px-4 py-2.5 ${selected ? "bg-emerald-500/20 ring-2 ring-emerald-500 dark:bg-emerald-500/25" : "bg-emerald-500/10 hover:bg-emerald-500/15"}`
+          : `gap-2 px-3.5 py-2 ${selected ? "bg-blue-500/15 ring-2 ring-blue-500 dark:bg-blue-500/20" : "bg-blue-500/8 hover:bg-blue-500/15"}`
       }`}
     >
       {pinned && (
