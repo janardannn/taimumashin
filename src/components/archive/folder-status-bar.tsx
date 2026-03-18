@@ -478,7 +478,11 @@ function RestoreConfirmModal({
                       {cost === 0 ? "Free" : `~$${cost < 0.01 ? "<0.01" : cost.toFixed(2)}`}
                     </span>
                     <p className="text-xs text-muted-foreground">
-                      {tier.perGB === 0 ? "No retrieval fee" : `$${tier.perGB}/GB`}
+                      {tier.perGB === 0 && tier.perRequest === 0
+                        ? "No retrieval fee"
+                        : tier.perRequest === 0
+                          ? `$${tier.perGB}/GB`
+                          : `$${tier.perGB}/GB + $${tier.perRequest}/1K req`}
                     </p>
                   </div>
                 </div>
