@@ -9,7 +9,12 @@ export async function GET(req: NextRequest) {
   }
 
   const rawPath = req.nextUrl.searchParams.get("path") || "";
-  const decodedPath = decodeURIComponent(rawPath);
+  let decodedPath: string;
+  try {
+    decodedPath = decodeURIComponent(rawPath);
+  } catch {
+    return NextResponse.json({ error: "Invalid path encoding" }, { status: 400 });
+  }
   const isInstant = decodedPath === "instant" || decodedPath.startsWith("instant/");
 
   // Normalize to DB folder path

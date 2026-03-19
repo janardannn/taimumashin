@@ -16,8 +16,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Folder name required" }, { status: 400 });
   }
 
-  const decodedParent = parentPath ? decodeURIComponent(parentPath) : "";
-  const decodedName = decodeURIComponent(name);
+  let decodedParent: string;
+  let decodedName: string;
+  try {
+    decodedParent = parentPath ? decodeURIComponent(parentPath) : "";
+    decodedName = decodeURIComponent(name);
+  } catch {
+    return NextResponse.json({ error: "Invalid path encoding" }, { status: 400 });
+  }
   const folderPath = decodedParent ? `${decodedParent}/${decodedName}` : decodedName;
 
   try {
