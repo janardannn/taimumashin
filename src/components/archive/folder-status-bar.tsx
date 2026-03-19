@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download, FolderPlus, Upload } from "lucide-react";
 import { formatFileSize } from "@/lib/file-utils";
 import { useS3 } from "@/hooks/use-s3";
+import { useOperations, type DeleteSelection } from "@/components/operation-provider";
 import { getRegionPricing, PRICING_DATE, type RestoreTier } from "@/lib/pricing";
 
 interface FolderStats {
@@ -50,38 +51,16 @@ export function FolderStatusBar({
   region,
 }: FolderStatusBarProps) {
   const [restoring, setRestoring] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   const s3 = useS3();
+  const ops = useOperations();
 
   const { totalFiles, totalSize, availableCount } = stats;
   const sizeLabel = formatFileSize(totalSize);
-
-  // Helper: list all objects recursively under a prefix
-  async function listAllObjects(prefix: string) {
-    const allObjects: { Key: string; Size: number; StorageClass?: string }[] = [];
-    let continuationToken: string | undefined;
-
-    do {
-      const listing = await s3.listObjects(prefix, "", continuationToken);
-      for (const obj of listing.Contents || []) {
-        if (obj.Key && !obj.Key.endsWith("/")) {
-          allObjects.push({
-            Key: obj.Key,
-            Size: obj.Size || 0,
-            StorageClass: obj.StorageClass,
-          });
-        }
-      }
-      continuationToken = listing.NextContinuationToken;
-    } while (continuationToken);
-
-    return allObjects;
-  }
 
   // Helper: compute S3 prefix from folderPath
   function getS3Prefix(): string {
@@ -107,7 +86,7 @@ export function FolderStatusBar({
       }
 
       const prefix = getS3Prefix();
-      const objects = await listAllObjects(prefix);
+      const objects = await s3.listAllObjects(prefix);
 
       let fileCount = 0;
       let totalSizeBytes = 0;
@@ -150,68 +129,12 @@ export function FolderStatusBar({
     }
   }
 
-  async function handleDelete(items?: Selection[]) {
+  function handleDelete(items?: DeleteSelection[]) {
     const toDelete = items || selections;
     if (toDelete.length === 0) return;
     setShowDeleteConfirm(false);
-    setDeleting(true);
-    setError("");
-
-    try {
-      if (!s3.ready) {
-        setError("S3 credentials not ready yet");
-        return;
-      }
-
-      for (const sel of toDelete) {
-        if (sel.type === "file") {
-          await s3.deleteObject(sel.key);
-
-          if (sel.key.startsWith("originals/")) {
-            const previewKey = sel.key.replace(/^originals\//, "previews/");
-            try { await s3.deleteObject(previewKey); } catch { /* Preview might not exist */ }
-          }
-
-          const res = await fetch("/api/archive/delete", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key: sel.key }),
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            setError(data.error || "Delete tracking failed");
-            return;
-          }
-        } else {
-          const objects = await listAllObjects(sel.key);
-
-          for (const obj of objects) {
-            await s3.deleteObject(obj.Key);
-            if (obj.Key.startsWith("originals/")) {
-              const previewKey = obj.Key.replace(/^originals\//, "previews/");
-              try { await s3.deleteObject(previewKey); } catch { /* Preview might not exist */ }
-            }
-          }
-
-          const res = await fetch("/api/archive/delete", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prefix: sel.key }),
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            setError(data.error || "Delete tracking failed");
-            return;
-          }
-        }
-      }
-
-      onDeleteComplete();
-    } catch {
-      setError("Delete request failed.");
-    } finally {
-      setDeleting(false);
-    }
+    ops.startDelete(toDelete);
+    onDeleteComplete();
   }
 
   async function handleDownloadAll() {
@@ -226,7 +149,7 @@ export function FolderStatusBar({
 
       const JSZip = (await import("jszip")).default;
       const prefix = getS3Prefix();
-      const objects = await listAllObjects(prefix);
+      const objects = await s3.listAllObjects(prefix);
 
       if (!objects.length) {
         setError("No files to download");
@@ -331,8 +254,7 @@ export function FolderStatusBar({
               </span>
               <button
                 onClick={() => setShowDeleteConfirm(true)}
-                disabled={deleting}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md bg-red-600 px-2.5 text-xs font-medium text-white hover:bg-red-700 active:scale-[0.97] cursor-pointer disabled:opacity-50 transition-all"
+                className="inline-flex h-7 items-center gap-1.5 rounded-md bg-red-600 px-2.5 text-xs font-medium text-white hover:bg-red-700 active:scale-[0.97] cursor-pointer transition-all"
               >
                 <Trash2 className="h-3 w-3" />
                 Delete

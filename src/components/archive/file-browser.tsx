@@ -12,6 +12,7 @@ import { BreadcrumbNav } from "./breadcrumb-nav";
 import { FolderStatusBar } from "./folder-status-bar";
 import { useS3 } from "@/hooks/use-s3";
 import { useSearch } from "@/components/search-context";
+import { useOperationRefresh } from "@/components/operation-provider";
 import { getFileType } from "@/lib/file-utils";
 
 interface S3Folder {
@@ -293,8 +294,10 @@ export function FileBrowser({ path }: FileBrowserProps) {
 
   const handleDeleteComplete = useCallback(() => {
     setSelectedItems(new Map());
-    loadContents();
-  }, [loadContents]);
+  }, []);
+
+  // Auto-refresh when operations (upload/delete) complete
+  useOperationRefresh(loadContents);
 
   return (
     <div className="space-y-4" onClick={handleBackgroundClick}>
@@ -447,10 +450,6 @@ export function FileBrowser({ path }: FileBrowserProps) {
         <UploadDialog
           folderPath={decodedPath}
           onClose={() => setShowUpload(false)}
-          onUploadComplete={() => {
-            setShowUpload(false);
-            loadContents();
-          }}
         />
       )}
       {showNewFolder && (
