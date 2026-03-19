@@ -161,9 +161,14 @@ export function useS3({ lazy = false }: { lazy?: boolean } = {}) {
   );
 
   const getPresignedUrl = useCallback(
-    async (key: string, expiresIn = 3600) => {
+    async (key: string, expiresIn = 3600, download?: string) => {
       const { client, bucket } = await getClient();
-      return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn });
+      const command = new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        ...(download ? { ResponseContentDisposition: `attachment; filename="${download}"` } : {}),
+      });
+      return getSignedUrl(client, command, { expiresIn });
     },
     [getClient]
   );

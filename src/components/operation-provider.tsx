@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useCallback, useState, useEffect, useRef } from "react";
-import { Upload, Trash2, ChevronDown, ChevronUp, X, Check, AlertCircle } from "lucide-react";
+import { Upload, Trash2, Download, ChevronDown, ChevronUp, X, Check, AlertCircle } from "lucide-react";
 import { useS3 } from "@/hooks/use-s3";
 import { getFileType } from "@/lib/file-utils";
 import { canGenerateThumbnail, generateImageThumbnail } from "@/lib/preview-generator";
@@ -19,7 +19,7 @@ interface OperationItem {
 
 interface Operation {
   id: string;
-  type: "upload" | "delete";
+  type: "upload" | "delete" | "download";
   label: string;
   items: OperationItem[];
   status: OperationStatus;
@@ -37,9 +37,12 @@ export interface DeleteSelection {
   key: string;
 }
 
+export type DownloadSelection = DeleteSelection;
+
 interface OperationContextValue {
   startUpload: (files: UploadFileInput[], folderPath: string) => void;
   startDelete: (selections: DeleteSelection[]) => void;
+  startDownload: (selections: DownloadSelection[]) => void;
   registerRefresh: (cb: () => void) => void;
   unregisterRefresh: (cb: () => void) => void;
 }
@@ -325,15 +328,110 @@ export function OperationProvider({ children }: { children: React.ReactNode }) {
     [updateOp, notifyRefresh]
   );
 
+  // --- Download ---
+  // Hidden iframes with ResponseContentDisposition: attachment.
+  // Each iframe triggers a native browser download. Sequential with delay
+  // so the browser registers each download before the next one starts.
+
+  const startDownload = useCallback(
+    (selections: DownloadSelection[]) => {
+      const opId = crypto.randomUUID();
+      setCollapsed(false);
+
+      (async () => {
+        const s3 = s3Ref.current;
+
+        // Resolve folder selections into individual files
+        const files: { name: string; key: string }[] = [];
+        for (const sel of selections) {
+          if (sel.type === "file") {
+            files.push({ name: sel.name, key: sel.key });
+          } else {
+            const objects = await s3.listAllObjects(sel.key);
+            for (const obj of objects) {
+              files.push({ name: obj.Key.split("/").pop()!, key: obj.Key });
+            }
+          }
+        }
+
+        if (files.length === 0) return;
+
+        const items: OperationItem[] = files.map((f) => ({
+          label: f.name,
+          progress: 0,
+          status: "pending",
+        }));
+
+        const op: Operation = {
+          id: opId,
+          type: "download",
+          label: `Downloading ${files.length} file${files.length > 1 ? "s" : ""}`,
+          items,
+          status: "running",
+          startedAt: Date.now(),
+        };
+
+        setOperations((prev) => [...prev, op]);
+
+        // Presign all URLs upfront
+        const urls: string[] = [];
+        for (let i = 0; i < files.length; i++) {
+          updateOp(opId, (op) => ({
+            ...op,
+            items: op.items.map((item, j) => (j === i ? { ...item, status: "running" } : item)),
+          }));
+          try {
+            urls.push(await s3.getPresignedUrl(files[i].key, 3600, files[i].name));
+          } catch (err) {
+            urls.push("");
+            const msg = err instanceof Error ? err.message : "Presign failed";
+            updateOp(opId, (op) => ({
+              ...op,
+              items: op.items.map((item, j) => (j === i ? { ...item, status: "error", error: msg } : item)),
+            }));
+          }
+        }
+
+        // Create all iframes in a burst with minimal delay between for UX
+        let successCount = 0;
+
+        for (let i = 0; i < urls.length; i++) {
+          if (!urls[i]) continue;
+
+          const iframe = document.createElement("iframe");
+          iframe.style.display = "none";
+          document.body.appendChild(iframe);
+          iframe.src = urls[i];
+          setTimeout(() => iframe.remove(), 60000);
+
+          successCount++;
+          updateOp(opId, (op) => ({
+            ...op,
+            items: op.items.map((item, j) => (j === i ? { ...item, status: "done", progress: 100 } : item)),
+          }));
+
+          // Small delay between iframes for browser + widget breathing room
+          if (i < urls.length - 1) {
+            await new Promise((r) => setTimeout(r, 500));
+          }
+        }
+
+        const failCount = files.length - successCount;
+        const finalStatus: OperationStatus = successCount === 0 ? "error" : failCount > 0 ? "error" : "done";
+        updateOp(opId, (op) => ({ ...op, status: finalStatus }));
+      })();
+    },
+    [updateOp]
+  );
+
   const dismissCompleted = useCallback(() => {
     setOperations((prev) => prev.filter((op) => op.status === "running"));
   }, []);
 
   const hasOperations = operations.length > 0;
   const allDone = hasOperations && operations.every((op) => op.status !== "running");
-
   return (
-    <OperationContext.Provider value={{ startUpload, startDelete, registerRefresh, unregisterRefresh }}>
+    <OperationContext.Provider value={{ startUpload, startDelete, startDownload, registerRefresh, unregisterRefresh }}>
       {children}
       {hasOperations && (
         <OperationWidget
@@ -431,11 +529,9 @@ function OperationWidget({
             <div key={op.id}>
               {/* Operation header */}
               <div className="flex items-center gap-2 px-4 py-2 bg-muted/40 border-b border-border/50">
-                {op.type === "upload" ? (
-                  <Upload className="h-3.5 w-3.5 text-muted-foreground" />
-                ) : (
-                  <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-                )}
+                {op.type === "upload" && <Upload className="h-3.5 w-3.5 text-muted-foreground" />}
+                {op.type === "delete" && <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />}
+                {op.type === "download" && <Download className="h-3.5 w-3.5 text-muted-foreground" />}
                 <span className="text-xs font-medium text-muted-foreground">{op.label}</span>
               </div>
               {/* Items */}
@@ -466,7 +562,7 @@ function OperationWidget({
                         <span className="text-[11px] tabular-nums text-muted-foreground w-8 text-right">{item.progress}%</span>
                       </div>
                     )}
-                    {item.status === "running" && op.type === "delete" && (
+                    {item.status === "running" && (op.type === "delete" || op.type === "download") && (
                       <div className="h-4 w-4 rounded-full border-2 border-primary border-t-transparent animate-spin" />
                     )}
                     {item.status === "done" && (

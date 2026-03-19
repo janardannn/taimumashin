@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download, FolderPlus, Upload } from "lucide-react";
+import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download, FolderPlus, Upload, FolderInput } from "lucide-react";
 import { formatFileSize } from "@/lib/file-utils";
 import { useS3 } from "@/hooks/use-s3";
 import { useOperations, type DeleteSelection } from "@/components/operation-provider";
@@ -51,10 +51,10 @@ export function FolderStatusBar({
   region,
 }: FolderStatusBarProps) {
   const [restoring, setRestoring] = useState(false);
-  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [downloadCooldown, setDownloadCooldown] = useState(false);
 
   const s3 = useS3();
   const ops = useOperations();
@@ -137,46 +137,19 @@ export function FolderStatusBar({
     onDeleteComplete();
   }
 
-  async function handleDownloadAll() {
-    setDownloading(true);
-    setError("");
+  function handleDownloadSelected() {
+    if (downloadCooldown) return;
+    setDownloadCooldown(true);
+    setTimeout(() => setDownloadCooldown(false), 2000);
+    ops.startDownload(selections);
+  }
 
-    try {
-      if (!s3.ready) {
-        setError("S3 credentials not ready yet");
-        return;
-      }
-
-      const JSZip = (await import("jszip")).default;
-      const prefix = getS3Prefix();
-      const objects = await s3.listAllObjects(prefix);
-
-      if (!objects.length) {
-        setError("No files to download");
-        return;
-      }
-
-      const zip = new JSZip();
-
-      for (const obj of objects) {
-        const url = await s3.getPresignedUrl(obj.Key);
-        const blob = await fetch(url).then((r) => r.blob());
-        const name = obj.Key.split("/").pop()!;
-        zip.file(name, blob);
-      }
-
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-      const url = URL.createObjectURL(zipBlob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${folderPath.split("/").pop() || "archive"}.zip`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      setError("Download failed.");
-    } finally {
-      setDownloading(false);
-    }
+  function handleDownloadAll() {
+    if (downloadCooldown) return;
+    setDownloadCooldown(true);
+    setTimeout(() => setDownloadCooldown(false), 2000);
+    const prefix = getS3Prefix();
+    ops.startDownload([{ type: "folder", name: folderPath.split("/").pop() || "archive", key: prefix }]);
   }
 
   // Archive status chip
@@ -242,23 +215,39 @@ export function FolderStatusBar({
         <div className="flex items-center gap-2">
           {selections.length > 0 ? (
             <>
-              <span className="inline-flex items-center gap-1.5 rounded-md bg-blue-500/10 ring-1 ring-blue-500/40 px-2.5 py-1 text-xs font-medium text-blue-700 dark:text-blue-300">
-                {selections.length === 1 ? (
-                  <>
-                    {selections[0].type === "folder" ? <Folder className="h-3 w-3 text-muted-foreground" /> : <FileIcon className="h-3 w-3 text-muted-foreground" />}
-                    <span className="max-w-[150px] truncate">{selections[0].name}</span>
-                  </>
-                ) : (
-                  <>{selections.length} items selected</>
-                )}
-              </span>
-              <button
-                onClick={() => setShowDeleteConfirm(true)}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md bg-red-600 px-2.5 text-xs font-medium text-white hover:bg-red-700 active:scale-[0.97] cursor-pointer transition-all"
-              >
-                <Trash2 className="h-3 w-3" />
-                Delete
-              </button>
+              <div className="flex items-center gap-1">
+                {/* Delete */}
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="group inline-flex items-center h-7 rounded-md bg-red-500/10 px-2 text-red-500 cursor-pointer active:scale-[0.97] transition-all duration-200 hover:bg-red-500/15"
+                >
+                  <Trash2 className="h-3.5 w-3.5 shrink-0" />
+                  <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium transition-all duration-200 ease-out group-hover:max-w-[250px] group-hover:pl-1.5">
+                    {selections.length === 1 ? selections[0].name : `${selections.length} items`} · Delete
+                  </span>
+                </button>
+
+                {/* Download */}
+                <button
+                  onClick={handleDownloadSelected}
+                  className="group inline-flex items-center h-7 rounded-md bg-emerald-500/10 px-2 text-emerald-500 cursor-pointer active:scale-[0.97] transition-all duration-200 hover:bg-emerald-500/15"
+                >
+                  <Download className="h-3.5 w-3.5 shrink-0" />
+                  <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium transition-all duration-200 ease-out group-hover:max-w-[250px] group-hover:pl-1.5">
+                    {selections.length === 1 ? selections[0].name : `${selections.length} items`} · Download
+                  </span>
+                </button>
+
+                {/* Move */}
+                <button
+                  className="group inline-flex items-center h-7 rounded-md bg-blue-500/10 px-2 text-blue-500 cursor-pointer active:scale-[0.97] transition-all duration-200 hover:bg-blue-500/15"
+                >
+                  <FolderInput className="h-3.5 w-3.5 shrink-0" />
+                  <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium transition-all duration-200 ease-out group-hover:max-w-[250px] group-hover:pl-1.5">
+                    {selections.length === 1 ? selections[0].name : `${selections.length} items`} · Move
+                  </span>
+                </button>
+              </div>
               <div className="h-4 w-px bg-border" />
             </>
           ) : (
@@ -269,12 +258,11 @@ export function FolderStatusBar({
               {totalFiles > 0 && (availableCount > 0 || isInstant) && (
                 <button
                   onClick={handleDownloadAll}
-                  disabled={downloading}
-                  className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] cursor-pointer disabled:opacity-50 transition-all"
-                  title="Download all files as ZIP"
+                  className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] cursor-pointer transition-all"
+                  title="Download all files"
                 >
                   <Download className="h-3 w-3" />
-                  {downloading ? "..." : "ZIP"}
+                  DL
                 </button>
               )}
               <div className="h-4 w-px bg-border" />
