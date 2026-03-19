@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { Upload, FolderUp, X } from "lucide-react";
 import { formatFileSize, getFileType } from "@/lib/file-utils";
 import { canGenerateThumbnail, generateImageThumbnail } from "@/lib/preview-generator";
 import { useS3 } from "@/hooks/use-s3";
+import { useToast } from "@/components/toast";
 
 interface UploadDialogProps {
   folderPath: string;
@@ -24,18 +25,32 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState("");
   const s3 = useS3();
+  const toast = useToast();
+  const listRef = useRef<HTMLDivElement>(null);
+  const prevCountRef = useRef(0);
 
-  const processFileList = useCallback((fileList: FileList | File[]) => {
+  // Smooth scroll to bottom when new files are appended
+  useEffect(() => {
+    if (files.length > prevCountRef.current && prevCountRef.current > 0) {
+      listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
+    }
+    prevCountRef.current = files.length;
+  }, [files.length]);
+
+  const processFileList = useCallback((fileList: FileList | File[], append = false) => {
     const arr = Array.from(fileList);
-    setFiles(
-      arr.map((file) => ({
-        file,
-        // webkitRelativePath preserves folder structure (e.g. "trip-2022/photos/beach.jpg")
-        relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
-        progress: 0,
-        status: "pending",
-      }))
-    );
+    const newFiles = arr.map((file) => ({
+      file,
+      // webkitRelativePath preserves folder structure (e.g. "trip-2022/photos/beach.jpg")
+      relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+      progress: 0,
+      status: "pending" as const,
+    }));
+    if (append) {
+      setFiles((prev) => [...prev, ...newFiles]);
+    } else {
+      setFiles(newFiles);
+    }
   }, []);
 
   const handleFileSelect = useCallback(
@@ -46,17 +61,53 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
   );
 
   const handleDrop = useCallback(
-    (e: React.DragEvent) => {
+    async (e: React.DragEvent) => {
       e.preventDefault();
-      processFileList(e.dataTransfer.files);
+
+      // Walk dropped directories recursively via webkitGetAsEntry
+      const items = Array.from(e.dataTransfer.items);
+      const entries = items
+        .map((item) => item.webkitGetAsEntry?.())
+        .filter((entry): entry is FileSystemEntry => entry != null);
+
+      if (entries.some((entry) => entry.isDirectory)) {
+        const collected: File[] = [];
+
+        async function walkEntry(entry: FileSystemEntry, path: string): Promise<void> {
+          if (entry.isFile) {
+            const file = await new Promise<File>((resolve) =>
+              (entry as FileSystemFileEntry).file(resolve)
+            );
+            // Attach relative path so processFileList picks it up
+            Object.defineProperty(file, "webkitRelativePath", { value: path + file.name });
+            collected.push(file);
+          } else if (entry.isDirectory) {
+            const reader = (entry as FileSystemDirectoryEntry).createReader();
+            const entries = await new Promise<FileSystemEntry[]>((resolve) =>
+              reader.readEntries(resolve)
+            );
+            for (const child of entries) {
+              await walkEntry(child, path + entry.name + "/");
+            }
+          }
+        }
+
+        for (const entry of entries) {
+          await walkEntry(entry, "");
+        }
+        processFileList(collected, files.length > 0);
+      } else {
+        processFileList(e.dataTransfer.files, files.length > 0);
+      }
     },
-    [processFileList]
+    [processFileList, files.length]
   );
 
   async function uploadFiles() {
     setUploading(true);
     setError("");
     let anySuccess = false;
+    let successCount = 0;
 
     for (let i = 0; i < files.length; i++) {
       const { file, relativePath } = files[i];
@@ -135,7 +186,7 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
         }
 
         // Track in DB
-        await fetch("/api/archive/upload/confirm", {
+        const confirmRes = await fetch("/api/archive/upload/confirm", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -144,10 +195,15 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
             contentType,
             originalDate: file.lastModified ? new Date(file.lastModified).toISOString() : null,
             previewSize,
+            hasPreview: previewSize !== null,
           }),
         });
+        if (!confirmRes.ok) {
+          throw new Error("Failed to save file record");
+        }
 
         anySuccess = true;
+        successCount++;
         setFiles((prev) =>
           prev.map((f, j) => (j === i ? { ...f, status: "done", progress: 100 } : f))
         );
@@ -161,8 +217,19 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
     }
 
     setUploading(false);
+
     if (anySuccess) {
+      const failCount = files.length - successCount;
+      if (failCount === 0) {
+        toast(
+          successCount === 1 ? "Upload complete" : `All ${successCount} files uploaded`,
+          "success"
+        );
+      } else {
+        toast(`${successCount} uploaded, ${failCount} failed`, "error");
+      }
       onUploadComplete();
+      onClose();
     }
   }
 
@@ -170,12 +237,12 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
   const errorCount = files.filter((f) => f.status === "error").length;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-      <div className="w-full max-w-lg rounded-lg border bg-background/80 backdrop-blur-xl p-6 shadow-lg">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={!uploading ? onClose : undefined}>
+      <div className="w-full max-w-lg rounded-xl border border-border bg-background p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Upload</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
-            <X className="h-5 w-5" />
+          <button onClick={onClose} disabled={uploading} className="flex h-7 w-7 items-center justify-center rounded-md bg-muted-foreground/15 text-muted-foreground hover:bg-muted-foreground/30 hover:text-foreground cursor-pointer transition-colors disabled:opacity-50">
+            <X className="h-4 w-4" />
           </button>
         </div>
 
@@ -188,11 +255,9 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
             <Upload className="h-8 w-8 text-muted-foreground" />
             <p className="text-sm text-muted-foreground">Drag & drop files or folders</p>
             <div className="flex gap-2">
-              <label className="cursor-pointer rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
-                <span className="flex items-center gap-1.5">
-                  <Upload className="h-3.5 w-3.5" />
-                  Files
-                </span>
+              <label className="cursor-pointer inline-flex h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 active:scale-[0.97] transition-all">
+                <Upload className="h-3.5 w-3.5" />
+                Files
                 <input
                   type="file"
                   multiple
@@ -200,11 +265,9 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
                   onChange={handleFileSelect}
                 />
               </label>
-              <label className="cursor-pointer rounded-md border px-4 py-2 text-sm font-medium hover:bg-accent">
-                <span className="flex items-center gap-1.5">
-                  <FolderUp className="h-3.5 w-3.5" />
-                  Folder
-                </span>
+              <label className="cursor-pointer inline-flex h-7 items-center gap-1.5 rounded-md border border-foreground/20 bg-foreground/10 px-2.5 text-xs font-medium text-foreground hover:bg-foreground/15 active:scale-[0.97] transition-all">
+                <FolderUp className="h-3.5 w-3.5" />
+                Folder
                 <input
                   type="file"
                   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -227,18 +290,30 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
             )}
 
             {/* File list */}
-            <div className="max-h-72 space-y-1.5 overflow-y-auto">
+            <div ref={listRef} onDragOver={(e) => e.preventDefault()} onDrop={handleDrop} className="max-h-72 space-y-1 overflow-y-scroll rounded-lg border border-border p-2 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20">
               {files.map((f, i) => (
-                <div key={i} className="flex items-center gap-3 text-sm">
+                <div key={i} className="group flex items-center gap-2 rounded-md px-2 py-1.5 text-sm">
                   <div className="flex-1 min-w-0">
-                    <p className="truncate font-medium">{f.relativePath}</p>
-                    <p className="text-xs text-muted-foreground">{formatFileSize(f.file.size)}</p>
+                    <p className="truncate font-medium text-xs">{f.relativePath}</p>
+                    <p className="text-[11px] text-muted-foreground">{formatFileSize(f.file.size)}</p>
                   </div>
-                  <div className="w-20 text-right text-xs shrink-0">
-                    {f.status === "pending" && <span className="text-muted-foreground">Pending</span>}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {f.status === "pending" && (
+                      <>
+                        <span className="text-xs text-muted-foreground">Pending</span>
+                        {!uploading && (
+                          <button
+                            onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
+                            className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground/50 hover:bg-muted-foreground/15 hover:text-foreground cursor-pointer transition-colors"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        )}
+                      </>
+                    )}
                     {f.status === "uploading" && (
-                      <div className="space-y-1">
-                        <span>{f.progress}%</span>
+                      <div className="w-16 space-y-1 text-right">
+                        <span className="text-[11px] tabular-nums">{f.progress}%</span>
                         <div className="h-1 w-full rounded-full bg-muted">
                           <div
                             className="h-full rounded-full bg-primary transition-all"
@@ -247,8 +322,8 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
                         </div>
                       </div>
                     )}
-                    {f.status === "done" && <span className="text-green-600">Done</span>}
-                    {f.status === "error" && <span className="text-destructive">Failed</span>}
+                    {f.status === "done" && <span className="text-xs text-green-500">Done</span>}
+                    {f.status === "error" && <span className="text-xs text-destructive">Failed</span>}
                   </div>
                 </div>
               ))}
@@ -264,14 +339,14 @@ export function UploadDialog({ folderPath, onClose, onUploadComplete }: UploadDi
               <button
                 onClick={() => setFiles([])}
                 disabled={uploading}
-                className="flex-1 rounded-md border py-2 text-sm font-medium hover:bg-accent disabled:opacity-50"
+                className="flex-1 rounded-md border py-2 text-sm font-medium hover:bg-accent active:scale-[0.98] cursor-pointer disabled:opacity-50 transition-all"
               >
                 Clear
               </button>
               <button
                 onClick={uploadFiles}
                 disabled={uploading}
-                className="flex-1 rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                className="flex-1 rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 active:scale-[0.98] cursor-pointer disabled:opacity-50 transition-all"
               >
                 {uploading
                   ? `Uploading ${doneCount}/${files.length}...`
