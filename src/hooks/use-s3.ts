@@ -201,10 +201,29 @@ export function useS3() {
     [getClient]
   );
 
+  const listAllObjects = useCallback(
+    async (prefix: string) => {
+      const allObjects: { Key: string; Size: number; StorageClass?: string }[] = [];
+      let continuationToken: string | undefined;
+      do {
+        const listing = await listObjects(prefix, "", continuationToken);
+        for (const obj of listing.Contents || []) {
+          if (obj.Key && !obj.Key.endsWith("/")) {
+            allObjects.push({ Key: obj.Key, Size: obj.Size || 0, StorageClass: obj.StorageClass });
+          }
+        }
+        continuationToken = listing.NextContinuationToken;
+      } while (continuationToken);
+      return allObjects;
+    },
+    [listObjects]
+  );
+
   return {
     ready,
     error,
     listObjects,
+    listAllObjects,
     headObject,
     putObject,
     getPresignedUrl,
