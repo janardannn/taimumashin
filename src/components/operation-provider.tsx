@@ -67,7 +67,7 @@ export function OperationProvider({ children }: { children: React.ReactNode }) {
   const [operations, setOperations] = useState<Operation[]>([]);
   const [collapsed, setCollapsed] = useState(false);
   const refreshCallbacks = useRef(new Set<() => void>());
-  const s3 = useS3();
+  const s3 = useS3({ lazy: true });
 
   // Stable ref so async loops always see latest s3
   const s3Ref = useRef(s3);

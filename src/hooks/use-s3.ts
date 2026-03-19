@@ -19,7 +19,7 @@ interface S3Config {
   jwt: string;
 }
 
-export function useS3() {
+export function useS3({ lazy = false }: { lazy?: boolean } = {}) {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const configRef = useRef<S3Config | null>(null);
@@ -110,13 +110,14 @@ export function useS3() {
     return { client, bucket: config.bucketName };
   }, [ensureCredentials]);
 
-  // Initialize on mount
+  // Initialize on mount (skip in lazy mode — credentials fetched on first operation)
   useEffect(() => {
+    if (lazy) return;
     fetchConfig()
       .then((config) => assumeRole(config))
       .then(() => setReady(true))
       .catch((err) => setError(err.message));
-  }, [fetchConfig, assumeRole]);
+  }, [lazy, fetchConfig, assumeRole]);
 
   // --- S3 Operations ---
 
