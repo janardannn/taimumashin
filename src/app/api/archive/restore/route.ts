@@ -13,6 +13,10 @@ function safeBigInt(val: unknown): bigint {
 // DB-only: S3 restore requests are handled client-side via useS3 hook
 // This route accepts the result (fileCount, totalSize) and creates a DB record
 export async function POST(req: Request) {
+  if (!req.headers.get("content-type")?.includes("application/json")) {
+    return NextResponse.json({ error: "Invalid Content-Type" }, { status: 415 });
+  }
+
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });

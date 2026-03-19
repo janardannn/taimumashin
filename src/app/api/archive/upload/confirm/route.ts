@@ -12,6 +12,10 @@ function safeBigInt(val: unknown): bigint {
 }
 
 export async function POST(req: Request) {
+  if (!req.headers.get("content-type")?.includes("application/json")) {
+    return NextResponse.json({ error: "Invalid Content-Type" }, { status: 415 });
+  }
+
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
