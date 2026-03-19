@@ -2,6 +2,14 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getPrisma } from "@/lib/db";
 
+function safeBigInt(val: unknown): bigint {
+  try {
+    return BigInt(val || 0);
+  } catch {
+    return BigInt(0);
+  }
+}
+
 // DB-only: S3 restore requests are handled client-side via useS3 hook
 // This route accepts the result (fileCount, totalSize) and creates a DB record
 export async function POST(req: Request) {
@@ -27,7 +35,7 @@ export async function POST(req: Request) {
         estimatedCost: estimatedCost != null ? estimatedCost : null,
         status: "RESTORING",
         fileCount: fileCount || 0,
-        totalSize: BigInt(totalSize || 0),
+        totalSize: safeBigInt(totalSize),
       },
     });
 

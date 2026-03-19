@@ -3,6 +3,14 @@ import { auth } from "@/lib/auth";
 import { getPrisma } from "@/lib/db";
 import { getFileType } from "@/lib/file-utils";
 
+function safeBigInt(val: unknown): bigint {
+  try {
+    return BigInt(val || 0);
+  } catch {
+    return BigInt(0);
+  }
+}
+
 export async function POST(req: Request) {
   const session = await auth();
   if (!session?.user?.id) {
@@ -62,11 +70,11 @@ export async function POST(req: Request) {
       name,
       s3Key: key,
       previewKey: fileType === "image" ? previewKey : null,
-      size: BigInt(size || 0),
+      size: safeBigInt(size),
       type: contentType || "application/octet-stream",
       folderPath,
       originalDate: originalDate ? new Date(originalDate) : null,
-      previewSize: previewSize ? BigInt(previewSize) : null,
+      previewSize: previewSize ? safeBigInt(previewSize) : null,
     },
   });
 
