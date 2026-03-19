@@ -1,14 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   taimumashin — One-click deployment of user-side storage infrastructure.
-  Creates an S3 bucket with Glacier lifecycle, a Lambda function for restore
-  notifications, an IAM OIDC provider and role for browser-based S3 access,
-  and SES email identity. Deploy this stack, then paste the RoleArn and
-  BucketName outputs into your taimumashin dashboard.
+  Creates an S3 bucket with Glacier lifecycle, a Lambda for restore
+  notifications, an IAM OIDC provider and role for browser-based S3
+  access, and SES email identity.
 
-# =============================================================================
-# Parameters — collected from the user at deploy time
-# =============================================================================
 Parameters:
   TaimumashinIssuerUrl:
     Type: String
@@ -24,9 +20,8 @@ Parameters:
     AllowedPattern: "^https?://.+"
     ConstraintDescription: Must be an HTTP or HTTPS URL.
     Description: >
-      Your taimumashin instance URL for webhook callbacks (e.g.
-      https://app.taimumashin.com/api/webhooks/restore-complete). The Lambda
-      function POSTs restore-complete notifications here.
+      Your taimumashin instance URL for webhook callbacks.
+      The Lambda function POSTs restore-complete notifications here.
 
   NotificationEmail:
     Type: String
@@ -46,14 +41,7 @@ Parameters:
       Number of days after upload before objects under the originals/ prefix
       are transitioned to Glacier Deep Archive. Default is 7.
 
-# =============================================================================
-# Resources
-# =============================================================================
 Resources:
-
-  # ---------------------------------------------------------------------------
-  # S3 Bucket — user media storage with Glacier lifecycle
-  # ---------------------------------------------------------------------------
   MediaBucket:
     Type: AWS::S3::Bucket
     DependsOn: LambdaInvokePermission
@@ -101,12 +89,7 @@ Resources:
       Tags:
         - Key: Project
           Value: taimumashin
-        - Key: ManagedBy
-          Value: CloudFormation
 
-  # ---------------------------------------------------------------------------
-  # Lambda Execution Role
-  # ---------------------------------------------------------------------------
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -123,13 +106,11 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # S3 read — only HeadObject needed for restore metadata
               - Effect: Allow
                 Action:
                   - "s3:GetObject"
                   - "s3:HeadObject"
                 Resource: "arn:aws:s3:::*"
-              # SES email sending
               - Effect: Allow
                 Action:
                   - "ses:SendEmail"
@@ -138,20 +119,13 @@ Resources:
                 Condition:
                   StringEquals:
                     "ses:FromAddress": !Ref NotificationEmail
-              # CloudWatch Logs
               - Effect: Allow
                 Action:
                   - "logs:CreateLogGroup"
                   - "logs:CreateLogStream"
                   - "logs:PutLogEvents"
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
-      Tags:
-        - Key: Project
-          Value: taimumashin
 
-  # ---------------------------------------------------------------------------
-  # Lambda Function — restore-complete notifications via webhook + SES
-  # ---------------------------------------------------------------------------
   RestoreNotifyLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -168,9 +142,6 @@ Resources:
         Variables:
           WEBHOOK_URL: !Ref WebhookUrl
           NOTIFICATION_EMAIL: !Ref NotificationEmail
-      Tags:
-        - Key: Project
-          Value: taimumashin
       Code:
         ZipFile: |
           """
@@ -200,7 +171,6 @@ Resources:
 
 
           def handler(event, context):
-              """Route S3 events to the restore handler."""
               for record in event.get("Records", []):
                   event_name = record.get("eventName", "")
                   bucket = record["s3"]["bucket"]["name"]
@@ -209,13 +179,12 @@ Resources:
                   logger.info("Event: %s | Bucket: %s | Key: %s", event_name, bucket, key)
 
                   if "ObjectRestore:Completed" in event_name:
-                      handle_restore_complete(bucket, key, record)
+                      handle_restore_complete(bucket, key)
                   else:
                       logger.warning("Unhandled event type: %s", event_name)
 
 
-          def handle_restore_complete(bucket, key, record):
-              """POST to webhook + send SES email on Glacier restore completion."""
+          def handle_restore_complete(bucket, key):
               try:
                   head = s3.head_object(Bucket=bucket, Key=key)
                   metadata = head.get("Metadata", {})
@@ -272,9 +241,6 @@ Resources:
                   except Exception as exc:
                       logger.error("SES send failed: %s", exc)
 
-  # ---------------------------------------------------------------------------
-  # Lambda Invoke Permission — allow S3 to invoke the function
-  # ---------------------------------------------------------------------------
   LambdaInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -283,40 +249,21 @@ Resources:
       Principal: s3.amazonaws.com
       SourceAccount: !Ref "AWS::AccountId"
 
-  # ---------------------------------------------------------------------------
-  # Lambda Log Group — explicit retention to control costs
-  # ---------------------------------------------------------------------------
   RestoreNotifyLambdaLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${RestoreNotifyLambda}"
       RetentionInDays: 30
-      Tags:
-        - Key: Project
-          Value: taimumashin
 
-  # ---------------------------------------------------------------------------
-  # OIDC Provider — trusts JWTs signed by the taimumashin instance
-  # ---------------------------------------------------------------------------
   OidcProvider:
     Type: AWS::IAM::OIDCProvider
     Properties:
       Url: !Ref TaimumashinIssuerUrl
       ClientIdList:
         - "sts.amazonaws.com"
-      # AWS fetches the JWKS from TaimumashinIssuerUrl/.well-known/jwks.json
-      # and validates the TLS certificate automatically.
-      # ThumbprintList is required by CloudFormation but AWS ignores it for
-      # HTTPS issuers and validates the full certificate chain instead.
       ThumbprintList:
         - "0000000000000000000000000000000000000000"
-      Tags:
-        - Key: Project
-          Value: taimumashin
 
-  # ---------------------------------------------------------------------------
-  # IAM Role — browser assumes this via AssumeRoleWithWebIdentity (OIDC)
-  # ---------------------------------------------------------------------------
   TaimumashinBrowserRole:
     Type: AWS::IAM::Role
     Properties:
@@ -328,14 +275,12 @@ Resources:
             Principal:
               Federated: !GetAtt OidcProvider.Arn
             Action: "sts:AssumeRoleWithWebIdentity"
-            # Audience is already constrained by the OIDC provider's ClientIdList
       MaxSessionDuration: 3600
       Policies:
         - PolicyName: TaimumashinBucketAccess
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Object-level operations
               - Effect: Allow
                 Action:
                   - "s3:GetObject"
@@ -344,53 +289,31 @@ Resources:
                   - "s3:HeadObject"
                   - "s3:RestoreObject"
                 Resource: !Sub "arn:aws:s3:::${MediaBucket}/*"
-              # Bucket-level operations
               - Effect: Allow
                 Action:
                   - "s3:ListBucket"
                 Resource: !Sub "arn:aws:s3:::${MediaBucket}"
-      Tags:
-        - Key: Project
-          Value: taimumashin
 
-  # ---------------------------------------------------------------------------
-  # SES Email Identity — verify the notification email address
-  # ---------------------------------------------------------------------------
   SesEmailIdentity:
     Type: AWS::SES::EmailIdentity
     Properties:
       EmailIdentity: !Ref NotificationEmail
 
-# =============================================================================
-# Outputs — values the user pastes into their taimumashin dashboard
-# =============================================================================
 Outputs:
   RoleArn:
-    Description: >
-      ARN of the OIDC IAM role. Paste this into your taimumashin
-      dashboard during onboarding.
+    Description: ARN of the OIDC IAM role for browser-based S3 access.
     Value: !GetAtt TaimumashinBrowserRole.Arn
-    Export:
-      Name: !Sub "${AWS::StackName}-RoleArn"
 
   BucketName:
-    Description: >
-      Name of the S3 bucket created for your media. Paste this into your
-      taimumashin dashboard during onboarding.
+    Description: Name of the S3 bucket for your media.
     Value: !Ref MediaBucket
-    Export:
-      Name: !Sub "${AWS::StackName}-BucketName"
 
   Region:
-    Description: >
-      AWS region where this stack is deployed. Select the matching region
-      in your taimumashin dashboard during onboarding.
+    Description: AWS region where this stack is deployed.
     Value: !Ref "AWS::Region"
-    Export:
-      Name: !Sub "${AWS::StackName}-Region"
 
   LambdaFunctionArn:
-    Description: ARN of the restore notification Lambda function (for reference).
+    Description: ARN of the restore notification Lambda (for reference).
     Value: !GetAtt RestoreNotifyLambda.Arn
 
   BucketArn:
