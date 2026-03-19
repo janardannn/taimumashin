@@ -111,6 +111,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         const { payload } = await jwtVerify(token, publicKey, {
           issuer,
           algorithms: [ALG],
+          audience: "sts.amazonaws.com",
         });
         return payload;
       } catch (err) {
