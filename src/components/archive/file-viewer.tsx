@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useCallback, useState } from "react";
-import { X, Download, FileText, File as FileIcon, Image as ImageIcon, Film, Music, Archive, Snowflake, Sun } from "lucide-react";
+import { X, Download, FileText, File as FileIcon, Image as ImageIcon, Film, Music } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import { formatFileSize, getFileType, getFileExtension, formatDate } from "@/lib/file-utils";
 import { useS3 } from "@/hooks/use-s3";
 
@@ -66,6 +67,7 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
         // Archived and not yet restored — try the preview copy
         const previewKey = file.key.replace(/^originals\//, "previews/");
         try {
+          await s3.headObject(previewKey); // throws if preview doesn't exist
           const url = await s3.getPresignedUrl(previewKey);
           if (!cancelled) {
             setViewUrl(url);
@@ -115,8 +117,10 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
   const fileType = getFileType(file.name);
   const ext = file.name.split(".").pop()?.toLowerCase() || "";
 
-  const isViewable = ["image", "video", "audio"].includes(fileType) ||
-    ["txt", "csv", "json", "md", "log", "xml", "html", "css", "js", "ts", "py", "sh"].includes(ext);
+  const isMd = ext === "md";
+  const isText = ["txt", "csv", "json", "log", "xml", "html", "css", "js", "ts", "py", "sh", "yaml", "yml", "toml", "ini", "env", "gitignore"].includes(ext);
+  const isPdf = ext === "pdf";
+  const isViewable = ["image", "video", "audio"].includes(fileType) || isText || isMd || isPdf;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={onClose}>
@@ -127,10 +131,15 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[var(--panel-border)] px-4 py-3">
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <p className="text-sm font-medium truncate">{file.name}</p>
+            <p className="text-sm font-medium truncate">{file.name}</p>
+            <div className="flex items-center gap-2 mt-0.5">
+              <p className="text-xs text-muted-foreground">
+                {formatFileSize(file.size)}
+                {file.lastModified && ` · ${formatDate(file.lastModified)}`}
+                {file.storageClass && ` · ${humanStorageClass(file.storageClass)}`}
+              </p>
               {!loading && source && (
-                <span className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                <span className={`shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
                   source === "original"
                     ? "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300"
                     : "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
@@ -139,25 +148,20 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
                 </span>
               )}
             </div>
-            <p className="text-xs text-muted-foreground">
-              {formatFileSize(file.size)}
-              {file.lastModified && ` · ${formatDate(file.lastModified)}`}
-              {file.storageClass && ` · ${humanStorageClass(file.storageClass)}`}
-            </p>
           </div>
           <div className="flex items-center gap-2 ml-4">
             {viewUrl && source === "original" && (
               <a
                 href={viewUrl}
                 download={file.name}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--glass-border)] bg-[var(--glass-bg)] px-3 text-xs hover:bg-[var(--glass-hover)] transition-colors"
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--glass-border)] bg-[var(--glass-bg)] px-3 text-xs hover:bg-[var(--glass-hover)] active:scale-[0.97] cursor-pointer transition-all"
               >
                 <Download className="h-3.5 w-3.5" />
                 Download
               </a>
             )}
-            <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
-              <X className="h-5 w-5" />
+            <button onClick={onClose} className="flex h-7 w-7 items-center justify-center rounded-md bg-muted-foreground/15 text-muted-foreground hover:bg-muted-foreground/30 hover:text-foreground cursor-pointer transition-colors">
+              <X className="h-4 w-4" />
             </button>
           </div>
         </div>
@@ -190,7 +194,15 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
               </div>
               <audio src={viewUrl} controls className="w-full max-w-md" />
             </div>
-          ) : viewUrl && isViewable ? (
+          ) : viewUrl && isPdf ? (
+            <iframe
+              src={viewUrl}
+              title={file.name}
+              className="mx-auto h-[70vh] w-full rounded-md"
+            />
+          ) : viewUrl && isMd ? (
+            <MarkdownViewer url={viewUrl} />
+          ) : viewUrl && isText ? (
             <TextViewer url={viewUrl} />
           ) : (
             <FileDetailsView file={file} />
@@ -237,6 +249,45 @@ function TextViewer({ url }: { url: string }) {
     <pre className="max-h-[70vh] overflow-auto rounded-md bg-muted p-4 text-xs leading-relaxed">
       {content}
     </pre>
+  );
+}
+
+function MarkdownViewer({ url }: { url: string }) {
+  const [content, setContent] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    fetch(url)
+      .then((r) => {
+        if (!r.ok) throw new Error();
+        return r.text();
+      })
+      .then(setContent)
+      .catch(() => setError(true));
+  }, [url]);
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="rounded-md bg-red-100 px-4 py-3 text-sm font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
+          Could not load file content.
+        </div>
+      </div>
+    );
+  }
+
+  if (content === null) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <p className="text-sm text-muted-foreground">Loading...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="prose prose-sm dark:prose-invert max-w-none max-h-[70vh] overflow-auto rounded-md bg-muted/50 p-6">
+      <ReactMarkdown>{content}</ReactMarkdown>
+    </div>
   );
 }
 
