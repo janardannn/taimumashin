@@ -12,6 +12,7 @@ import { BreadcrumbNav } from "./breadcrumb-nav";
 import { FolderStatusBar } from "./folder-status-bar";
 import { useS3 } from "@/hooks/use-s3";
 import { useSearch } from "@/components/search-context";
+import { getFileType } from "@/lib/file-utils";
 
 interface S3Folder {
   name: string;
@@ -166,7 +167,15 @@ export function FileBrowser({ path }: FileBrowserProps) {
         if (cancelled) break;
         if (previewLoadedRef.current.has(file.key)) continue;
 
-        const keyToPresign = isInstantPath ? file.key : file.previewKey;
+        let keyToPresign: string | null = null;
+        if (isInstantPath) {
+          keyToPresign = file.key;
+        } else if (file.previewKey) {
+          keyToPresign = file.previewKey;
+        } else if (file.key.startsWith("originals/") && getFileType(file.name) === "image") {
+          // Fallback for files uploaded before preview tracking — try the conventional path
+          keyToPresign = file.key.replace(/^originals\//, "previews/");
+        }
         if (!keyToPresign) continue;
 
         previewLoadedRef.current.add(file.key);
@@ -350,7 +359,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
             <p className="text-muted-foreground">This folder is empty</p>
             <button
               onClick={() => setShowUpload(true)}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 active:scale-[0.98] cursor-pointer transition-all"
             >
               <Upload className="h-4 w-4" />
               Upload files

@@ -5,7 +5,7 @@ import { getFileType } from "@/lib/file-utils";
 
 function safeBigInt(val: unknown): bigint {
   try {
-    return BigInt(val || 0);
+    return BigInt(val as string | number | bigint | boolean || 0);
   } catch {
     return BigInt(0);
   }
@@ -22,7 +22,7 @@ export async function POST(req: Request) {
   }
 
   const body = await req.json();
-  const { key, size, contentType, originalDate, previewSize } = body;
+  const { key, size, contentType, originalDate, previewSize, hasPreview } = body;
 
   if (!key) {
     return NextResponse.json({ error: "Missing key" }, { status: 400 });
@@ -73,7 +73,7 @@ export async function POST(req: Request) {
       userId: session.user.id,
       name,
       s3Key: key,
-      previewKey: fileType === "image" ? previewKey : null,
+      previewKey: hasPreview ? previewKey : null,
       size: safeBigInt(size),
       type: contentType || "application/octet-stream",
       folderPath,

@@ -4,7 +4,7 @@ import { getPrisma } from "@/lib/db";
 
 function safeBigInt(val: unknown): bigint {
   try {
-    return BigInt(val || 0);
+    return BigInt(val as string | number | bigint | boolean || 0);
   } catch {
     return BigInt(0);
   }
