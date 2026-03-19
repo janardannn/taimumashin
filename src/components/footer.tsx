@@ -9,7 +9,7 @@ import { Github, Circle } from "lucide-react";
 export function Footer() {
   const { data: session } = useSession();
   const [region, setRegion] = useState<string | null>(null);
-  const onboarded = (session?.user as Record<string, unknown>)?.onboarded;
+  const onboarded = (session?.user as unknown as Record<string, unknown>)?.onboarded;
 
   useEffect(() => {
     if (onboarded) {
