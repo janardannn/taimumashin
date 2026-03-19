@@ -115,7 +115,7 @@ Resources:
       CorsConfiguration:
         CorsRules:
           - AllowedOrigins:
-              - "*"
+              - !Ref TaimumashinIssuerUrl
             AllowedMethods:
               - PUT
               - GET
