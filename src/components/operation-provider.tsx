@@ -374,35 +374,48 @@ export function OperationProvider({ children }: { children: React.ReactNode }) {
 
         setOperations((prev) => [...prev, op]);
 
-        // Presign all URLs upfront
-        const urls: string[] = [];
-        for (let i = 0; i < files.length; i++) {
-          updateOp(opId, (op) => ({
-            ...op,
-            items: op.items.map((item, j) => (j === i ? { ...item, status: "running" } : item)),
-          }));
-          try {
-            urls.push(await s3.getPresignedUrl(files[i].key, 3600, files[i].name));
-          } catch (err) {
-            urls.push("");
-            const msg = err instanceof Error ? err.message : "Presign failed";
+        // Presign + probe all URLs in parallel
+        const results = await Promise.all(
+          files.map(async (f, i) => {
             updateOp(opId, (op) => ({
               ...op,
-              items: op.items.map((item, j) => (j === i ? { ...item, status: "error", error: msg } : item)),
+              items: op.items.map((item, j) => (j === i ? { ...item, status: "running" } : item)),
             }));
-          }
-        }
+            try {
+              const url = await s3.getPresignedUrl(f.key, 3600, f.name);
+              const probe = await fetch(url, { headers: { Range: "bytes=0-0" } });
+              const accessible = probe.status === 200 || probe.status === 206;
+              return { url, accessible };
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : "Presign failed";
+              updateOp(opId, (op) => ({
+                ...op,
+                items: op.items.map((item, j) => (j === i ? { ...item, status: "error", error: msg } : item)),
+              }));
+              return { url: "", accessible: false };
+            }
+          })
+        );
 
-        // Create all iframes in a burst with minimal delay between for UX
+        // Create iframes only for accessible files
         let successCount = 0;
 
-        for (let i = 0; i < urls.length; i++) {
-          if (!urls[i]) continue;
+        for (let i = 0; i < results.length; i++) {
+          const { url, accessible } = results[i];
+          if (!url) continue;
+
+          if (!accessible) {
+            updateOp(opId, (op) => ({
+              ...op,
+              items: op.items.map((item, j) => (j === i ? { ...item, status: "error", error: "File is archived" } : item)),
+            }));
+            continue;
+          }
 
           const iframe = document.createElement("iframe");
           iframe.style.display = "none";
           document.body.appendChild(iframe);
-          iframe.src = urls[i];
+          iframe.src = url;
           setTimeout(() => iframe.remove(), 60000);
 
           successCount++;
@@ -412,7 +425,7 @@ export function OperationProvider({ children }: { children: React.ReactNode }) {
           }));
 
           // Small delay between iframes for browser + widget breathing room
-          if (i < urls.length - 1) {
+          if (i < results.length - 1) {
             await new Promise((r) => setTimeout(r, 500));
           }
         }

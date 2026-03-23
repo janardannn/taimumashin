@@ -23,6 +23,7 @@ type ViewSource = "original" | "preview" | null;
 export function FileViewer({ file, onClose }: FileViewerProps) {
   const [viewUrl, setViewUrl] = useState<string | null>(null);
   const [source, setSource] = useState<ViewSource>(null);
+  const [actualStorageClass, setActualStorageClass] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const s3 = useS3();
 
@@ -40,43 +41,50 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
           if (!cancelled) {
             setViewUrl(url);
             setSource("original");
+            setActualStorageClass("STANDARD");
             setLoading(false);
           }
           return;
         }
 
-        // originals/ files — check storage class & restore status
-        const head = await s3.headObject(file.key);
-        const storageClass = head.StorageClass ?? "STANDARD";
-        const isArchived = storageClass === "DEEP_ARCHIVE" || storageClass === "GLACIER";
-        const isRestored = head.Restore
-          ? head.Restore.includes('ongoing-request="false"')
-          : false;
+        // Probe the original with a 1-byte ranged GET.
+        // If S3 returns 200/206 the file is accessible (Standard or restored Glacier).
+        // If 403 the file is in Glacier and not restored.
+        const url = await s3.getPresignedUrl(file.key);
+        let accessible = false;
+        try {
+          const probe = await fetch(url, { headers: { Range: "bytes=0-0" } });
+          accessible = probe.status === 200 || probe.status === 206;
+        } catch {
+          // Network/CORS error — assume inaccessible
+        }
 
-        if (!isArchived || isRestored) {
-          // Object is available — serve the original
-          const url = await s3.getPresignedUrl(file.key);
+        if (accessible) {
           if (!cancelled) {
             setViewUrl(url);
             setSource("original");
+            setActualStorageClass("STANDARD");
             setLoading(false);
           }
           return;
         }
 
-        // Archived and not yet restored — try the preview copy
+        // File is in Glacier — try the preview copy
+        if (!cancelled) setActualStorageClass("GLACIER");
         const previewKey = file.key.replace(/^originals\//, "previews/");
         try {
-          await s3.headObject(previewKey); // throws if preview doesn't exist
-          const url = await s3.getPresignedUrl(previewKey);
-          if (!cancelled) {
-            setViewUrl(url);
-            setSource("preview");
-            setLoading(false);
+          const previewUrl = await s3.getPresignedUrl(previewKey);
+          const previewProbe = await fetch(previewUrl, { headers: { Range: "bytes=0-0" } });
+          if (previewProbe.status === 200 || previewProbe.status === 206) {
+            if (!cancelled) {
+              setViewUrl(previewUrl);
+              setSource("preview");
+              setLoading(false);
+            }
+            return;
           }
-          return;
         } catch {
-          // No preview available either
+          // No preview available
         }
 
         if (!cancelled) {
@@ -86,7 +94,6 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
         }
       } catch {
         if (!cancelled) {
-          // Last-resort fallback: use a previewUrl if the caller provided one
           if (file.previewUrl) {
             setViewUrl(file.previewUrl);
             setSource("preview");
@@ -136,15 +143,17 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
               <p className="text-xs text-muted-foreground">
                 {formatFileSize(file.size)}
                 {file.lastModified && ` · ${formatDate(file.lastModified)}`}
-                {file.storageClass && ` · ${humanStorageClass(file.storageClass)}`}
+                {actualStorageClass && ` · ${humanStorageClass(actualStorageClass)}`}
               </p>
-              {!loading && source && (
+              {!loading && (
                 <span className={`shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
                   source === "original"
                     ? "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300"
-                    : "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                    : source === "preview"
+                      ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                      : "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
                 }`}>
-                  {source === "original" ? "Original" : "Preview"}
+                  {source === "original" ? "Original" : source === "preview" ? "Preview" : "Archived"}
                 </span>
               )}
             </div>
