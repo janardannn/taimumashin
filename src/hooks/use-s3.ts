@@ -163,10 +163,12 @@ export function useS3({ lazy = false }: { lazy?: boolean } = {}) {
   const getPresignedUrl = useCallback(
     async (key: string, expiresIn = 3600, download?: string) => {
       const { client, bucket } = await getClient();
+      // Strip non-ASCII from Content-Disposition filename to avoid S3 400
+      const safeDownload = download?.replace(/[^\x20-\x7E]/g, "_");
       const command = new GetObjectCommand({
         Bucket: bucket,
         Key: key,
-        ...(download ? { ResponseContentDisposition: `attachment; filename="${download}"` } : {}),
+        ...(safeDownload ? { ResponseContentDisposition: `attachment; filename="${safeDownload}"` } : {}),
       });
       return getSignedUrl(client, command, { expiresIn });
     },

@@ -3,7 +3,7 @@
 import { createContext, useContext, useCallback, useState, useEffect, useRef } from "react";
 import { Upload, Trash2, Download, ChevronDown, ChevronUp, X, Check, AlertCircle } from "lucide-react";
 import { useS3 } from "@/hooks/use-s3";
-import { getFileType } from "@/lib/file-utils";
+import { getFileType, sanitizePath } from "@/lib/file-utils";
 import { canGenerateThumbnail, generateImageThumbnail } from "@/lib/preview-generator";
 
 // --- Types ---
@@ -131,11 +131,12 @@ export function OperationProvider({ children }: { children: React.ReactNode }) {
 
           try {
             const contentType = file.type || "application/octet-stream";
+            const safePath = sanitizePath(relativePath);
             const decodedFolder = folderPath ? decodeURIComponent(folderPath) : "";
             const isInstant = decodedFolder === "instant" || decodedFolder.startsWith("instant/");
             const prefix = isInstant ? "instant" : "originals";
             const subPath = isInstant ? decodedFolder.replace(/^instant\/?/, "") : decodedFolder;
-            const key = `${prefix}/${subPath ? subPath + "/" : ""}${relativePath}`;
+            const key = `${prefix}/${subPath ? subPath + "/" : ""}${safePath}`;
 
             const metadata: Record<string, string> = {};
             if (file.lastModified) {
@@ -149,7 +150,7 @@ export function OperationProvider({ children }: { children: React.ReactNode }) {
             );
 
             let previewPutUrl: string | null = null;
-            if (!isInstant && getFileType(relativePath) === "image") {
+            if (!isInstant && getFileType(safePath) === "image") {
               const previewKey = key.replace(/^originals\//, "previews/");
               previewPutUrl = await s3.getPresignedPutUrl(previewKey, "image/webp");
             }
