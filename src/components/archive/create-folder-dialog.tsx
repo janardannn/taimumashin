@@ -86,7 +86,7 @@ export function CreateFolderDialog({ parentPath, onClose, onCreated }: CreateFol
           <button
             type="submit"
             disabled={loading || !name.trim() || !s3.ready}
-            className="w-full rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            className="w-full rounded-md bg-primary py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 active:scale-[0.98] cursor-pointer disabled:opacity-50 transition-all"
           >
             {loading ? "Creating..." : "Create Folder"}
           </button>

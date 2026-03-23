@@ -2,9 +2,21 @@ import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getPrisma } from "@/lib/db";
 
+function safeBigInt(val: unknown): bigint {
+  try {
+    return BigInt(val as string | number | bigint | boolean || 0);
+  } catch {
+    return BigInt(0);
+  }
+}
+
 // DB-only: S3 restore requests are handled client-side via useS3 hook
 // This route accepts the result (fileCount, totalSize) and creates a DB record
 export async function POST(req: Request) {
+  if (!req.headers.get("content-type")?.includes("application/json")) {
+    return NextResponse.json({ error: "Invalid Content-Type" }, { status: 415 });
+  }
+
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -27,7 +39,7 @@ export async function POST(req: Request) {
         estimatedCost: estimatedCost != null ? estimatedCost : null,
         status: "RESTORING",
         fileCount: fileCount || 0,
-        totalSize: BigInt(totalSize || 0),
+        totalSize: safeBigInt(totalSize),
       },
     });
 

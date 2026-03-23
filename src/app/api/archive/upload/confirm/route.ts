@@ -3,14 +3,26 @@ import { auth } from "@/lib/auth";
 import { getPrisma } from "@/lib/db";
 import { getFileType } from "@/lib/file-utils";
 
+function safeBigInt(val: unknown): bigint {
+  try {
+    return BigInt(val as string | number | bigint | boolean || 0);
+  } catch {
+    return BigInt(0);
+  }
+}
+
 export async function POST(req: Request) {
+  if (!req.headers.get("content-type")?.includes("application/json")) {
+    return NextResponse.json({ error: "Invalid Content-Type" }, { status: 415 });
+  }
+
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const body = await req.json();
-  const { key, size, contentType, originalDate, previewSize } = body;
+  const { key, size, contentType, originalDate, previewSize, hasPreview } = body;
 
   if (!key) {
     return NextResponse.json({ error: "Missing key" }, { status: 400 });
@@ -61,12 +73,12 @@ export async function POST(req: Request) {
       userId: session.user.id,
       name,
       s3Key: key,
-      previewKey: fileType === "image" ? previewKey : null,
-      size: BigInt(size || 0),
+      previewKey: hasPreview ? previewKey : null,
+      size: safeBigInt(size),
       type: contentType || "application/octet-stream",
       folderPath,
       originalDate: originalDate ? new Date(originalDate) : null,
-      previewSize: previewSize ? BigInt(previewSize) : null,
+      previewSize: previewSize ? safeBigInt(previewSize) : null,
     },
   });
 

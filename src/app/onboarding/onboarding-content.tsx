@@ -55,7 +55,7 @@ function CostEstimatorModal({
       >
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold">Cost Estimator</h2>
-          <button onClick={onClose} className="text-muted-foreground hover:text-foreground">
+          <button onClick={onClose} className="text-muted-foreground hover:text-foreground cursor-pointer active:scale-[0.97] transition-all">
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -276,7 +276,7 @@ function CopyField({ label, value }: { label: string; value: string }) {
           type="button"
           onClick={handleCopy}
           disabled={!value}
-          className="shrink-0 rounded-md border p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
+          className="shrink-0 rounded-md border p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50 cursor-pointer active:scale-[0.97] transition-all"
           title="Copy"
         >
           {copied ? <Check className="h-3.5 w-3.5 text-green-500" /> : <Copy className="h-3.5 w-3.5" />}
@@ -456,7 +456,7 @@ export function OnboardingContent() {
             <button
               type="button"
               onClick={() => setShowCostEstimator(true)}
-              className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-1"
+              className="inline-flex items-center gap-1 text-xs text-primary hover:underline mt-1 cursor-pointer active:scale-[0.97] transition-all"
             >
               <Calculator className="h-3 w-3" />
               Compare pricing across regions
@@ -472,7 +472,7 @@ export function OnboardingContent() {
           <button
             type="submit"
             disabled={loading}
-            className="flex h-10 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+            className="flex h-10 w-full items-center justify-center rounded-md bg-primary text-sm font-medium text-primary-foreground transition-all hover:bg-primary/90 disabled:opacity-50 cursor-pointer active:scale-[0.98]"
           >
             {loading ? "Saving..." : "Connect & Continue"}
           </button>

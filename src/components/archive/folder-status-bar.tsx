@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download, FolderPlus, Upload } from "lucide-react";
+import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download, FolderPlus, Upload, FolderInput } from "lucide-react";
 import { formatFileSize } from "@/lib/file-utils";
 import { useS3 } from "@/hooks/use-s3";
+import { useOperations, type DeleteSelection } from "@/components/operation-provider";
 import { getRegionPricing, PRICING_DATE, type RestoreTier } from "@/lib/pricing";
 
 interface FolderStats {
@@ -50,38 +51,16 @@ export function FolderStatusBar({
   region,
 }: FolderStatusBarProps) {
   const [restoring, setRestoring] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [downloadCooldown, setDownloadCooldown] = useState(false);
 
   const s3 = useS3();
+  const ops = useOperations();
 
   const { totalFiles, totalSize, availableCount } = stats;
   const sizeLabel = formatFileSize(totalSize);
-
-  // Helper: list all objects recursively under a prefix
-  async function listAllObjects(prefix: string) {
-    const allObjects: { Key: string; Size: number; StorageClass?: string }[] = [];
-    let continuationToken: string | undefined;
-
-    do {
-      const listing = await s3.listObjects(prefix, "", continuationToken);
-      for (const obj of listing.Contents || []) {
-        if (obj.Key && !obj.Key.endsWith("/")) {
-          allObjects.push({
-            Key: obj.Key,
-            Size: obj.Size || 0,
-            StorageClass: obj.StorageClass,
-          });
-        }
-      }
-      continuationToken = listing.NextContinuationToken;
-    } while (continuationToken);
-
-    return allObjects;
-  }
 
   // Helper: compute S3 prefix from folderPath
   function getS3Prefix(): string {
@@ -107,7 +86,7 @@ export function FolderStatusBar({
       }
 
       const prefix = getS3Prefix();
-      const objects = await listAllObjects(prefix);
+      const objects = await s3.listAllObjects(prefix);
 
       let fileCount = 0;
       let totalSizeBytes = 0;
@@ -150,109 +129,27 @@ export function FolderStatusBar({
     }
   }
 
-  async function handleDelete() {
-    if (selections.length === 0) return;
+  function handleDelete(items?: DeleteSelection[]) {
+    const toDelete = items || selections;
+    if (toDelete.length === 0) return;
     setShowDeleteConfirm(false);
-    setDeleting(true);
-    setError("");
-
-    try {
-      if (!s3.ready) {
-        setError("S3 credentials not ready yet");
-        return;
-      }
-
-      for (const sel of selections) {
-        if (sel.type === "file") {
-          await s3.deleteObject(sel.key);
-
-          if (sel.key.startsWith("originals/")) {
-            const previewKey = sel.key.replace(/^originals\//, "previews/");
-            try { await s3.deleteObject(previewKey); } catch { /* Preview might not exist */ }
-          }
-
-          const res = await fetch("/api/archive/delete", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key: sel.key }),
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            setError(data.error || "Delete tracking failed");
-            return;
-          }
-        } else {
-          const objects = await listAllObjects(sel.key);
-
-          for (const obj of objects) {
-            await s3.deleteObject(obj.Key);
-            if (obj.Key.startsWith("originals/")) {
-              const previewKey = obj.Key.replace(/^originals\//, "previews/");
-              try { await s3.deleteObject(previewKey); } catch { /* Preview might not exist */ }
-            }
-          }
-
-          const res = await fetch("/api/archive/delete", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prefix: sel.key }),
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            setError(data.error || "Delete tracking failed");
-            return;
-          }
-        }
-      }
-
-      onDeleteComplete();
-    } catch {
-      setError("Delete request failed.");
-    } finally {
-      setDeleting(false);
-    }
+    ops.startDelete(toDelete);
+    onDeleteComplete();
   }
 
-  async function handleDownloadAll() {
-    setDownloading(true);
-    setError("");
+  function handleDownloadSelected() {
+    if (downloadCooldown) return;
+    setDownloadCooldown(true);
+    setTimeout(() => setDownloadCooldown(false), 2000);
+    ops.startDownload(selections);
+  }
 
-    try {
-      if (!s3.ready) {
-        setError("S3 credentials not ready yet");
-        return;
-      }
-
-      const JSZip = (await import("jszip")).default;
-      const prefix = getS3Prefix();
-      const objects = await listAllObjects(prefix);
-
-      if (!objects.length) {
-        setError("No files to download");
-        return;
-      }
-
-      const zip = new JSZip();
-
-      for (const obj of objects) {
-        const url = await s3.getPresignedUrl(obj.Key);
-        const blob = await fetch(url).then((r) => r.blob());
-        const name = obj.Key.split("/").pop()!;
-        zip.file(name, blob);
-      }
-
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-      const url = URL.createObjectURL(zipBlob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${folderPath.split("/").pop() || "archive"}.zip`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      setError("Download failed.");
-    } finally {
-      setDownloading(false);
-    }
+  function handleDownloadAll() {
+    if (downloadCooldown) return;
+    setDownloadCooldown(true);
+    setTimeout(() => setDownloadCooldown(false), 2000);
+    const prefix = getS3Prefix();
+    ops.startDownload([{ type: "folder", name: folderPath.split("/").pop() || "archive", key: prefix }]);
   }
 
   // Archive status chip
@@ -293,7 +190,7 @@ export function FolderStatusBar({
         <button
           onClick={() => setShowRestoreConfirm(true)}
           disabled={restoring}
-          className="inline-flex h-7 items-center gap-1.5 rounded-md bg-amber-500/15 px-2.5 text-xs font-medium text-amber-500 hover:bg-amber-500/25 disabled:opacity-50"
+          className="inline-flex h-7 items-center gap-1.5 rounded-md bg-amber-500/15 px-2.5 text-xs font-medium text-amber-500 hover:bg-amber-500/25 active:scale-[0.97] cursor-pointer disabled:opacity-50 transition-all"
         >
           <Pickaxe className="h-3 w-3" />
           {restoring ? "..." : "Restore"}
@@ -318,24 +215,39 @@ export function FolderStatusBar({
         <div className="flex items-center gap-2">
           {selections.length > 0 ? (
             <>
-              <span className="inline-flex items-center gap-1.5 rounded-md bg-blue-500/10 ring-1 ring-blue-500/40 px-2.5 py-1 text-xs font-medium text-blue-700 dark:text-blue-300">
-                {selections.length === 1 ? (
-                  <>
-                    {selections[0].type === "folder" ? <Folder className="h-3 w-3 text-muted-foreground" /> : <FileIcon className="h-3 w-3 text-muted-foreground" />}
-                    <span className="max-w-[150px] truncate">{selections[0].name}</span>
-                  </>
-                ) : (
-                  <>{selections.length} items selected</>
-                )}
-              </span>
-              <button
-                onClick={() => setShowDeleteConfirm(true)}
-                disabled={deleting}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md bg-red-600 px-2.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 transition-colors"
-              >
-                <Trash2 className="h-3 w-3" />
-                Delete
-              </button>
+              <div className="flex items-center gap-1">
+                {/* Delete */}
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="group inline-flex items-center h-7 rounded-md bg-red-500/10 px-2 text-red-500 cursor-pointer active:scale-[0.97] transition-all duration-200 hover:bg-red-500/15"
+                >
+                  <Trash2 className="h-3.5 w-3.5 shrink-0" />
+                  <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium transition-all duration-200 ease-out group-hover:max-w-[250px] group-hover:pl-1.5">
+                    {selections.length === 1 ? selections[0].name : `${selections.length} items`} · Delete
+                  </span>
+                </button>
+
+                {/* Download */}
+                <button
+                  onClick={handleDownloadSelected}
+                  className="group inline-flex items-center h-7 rounded-md bg-emerald-500/10 px-2 text-emerald-500 cursor-pointer active:scale-[0.97] transition-all duration-200 hover:bg-emerald-500/15"
+                >
+                  <Download className="h-3.5 w-3.5 shrink-0" />
+                  <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium transition-all duration-200 ease-out group-hover:max-w-[250px] group-hover:pl-1.5">
+                    {selections.length === 1 ? selections[0].name : `${selections.length} items`} · Download
+                  </span>
+                </button>
+
+                {/* Move */}
+                <button
+                  className="group inline-flex items-center h-7 rounded-md bg-blue-500/10 px-2 text-blue-500 cursor-pointer active:scale-[0.97] transition-all duration-200 hover:bg-blue-500/15"
+                >
+                  <FolderInput className="h-3.5 w-3.5 shrink-0" />
+                  <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium transition-all duration-200 ease-out group-hover:max-w-[250px] group-hover:pl-1.5">
+                    {selections.length === 1 ? selections[0].name : `${selections.length} items`} · Move
+                  </span>
+                </button>
+              </div>
               <div className="h-4 w-px bg-border" />
             </>
           ) : (
@@ -346,12 +258,11 @@ export function FolderStatusBar({
               {totalFiles > 0 && (availableCount > 0 || isInstant) && (
                 <button
                   onClick={handleDownloadAll}
-                  disabled={downloading}
-                  className="inline-flex h-6 items-center gap-1 rounded px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
-                  title="Download all files as ZIP"
+                  className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] cursor-pointer transition-all"
+                  title="Download all files"
                 >
                   <Download className="h-3 w-3" />
-                  {downloading ? "..." : "ZIP"}
+                  DL
                 </button>
               )}
               <div className="h-4 w-px bg-border" />
@@ -359,14 +270,14 @@ export function FolderStatusBar({
           )}
           <button
             onClick={onNewFolder}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--glass-border)] bg-[var(--glass-bg)] px-2.5 text-xs text-muted-foreground hover:bg-[var(--glass-hover)] hover:text-foreground transition-colors"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-foreground/20 bg-foreground/10 px-2.5 text-xs font-medium text-foreground hover:bg-foreground/15 active:scale-[0.97] cursor-pointer transition-all"
           >
             <FolderPlus className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">New Folder</span>
           </button>
           <button
             onClick={onUpload}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 active:scale-[0.97] cursor-pointer transition-all"
           >
             <Upload className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Upload</span>
@@ -390,7 +301,7 @@ export function FolderStatusBar({
       {showDeleteConfirm && selections.length > 0 && (
         <DeleteConfirmModal
           selections={selections}
-          onConfirm={handleDelete}
+          onConfirm={(items) => handleDelete(items)}
           onCancel={() => setShowDeleteConfirm(false)}
         />
       )}
@@ -484,7 +395,7 @@ function RestoreConfirmModal({
         <div className="flex gap-2">
           <button
             onClick={onCancel}
-            className="flex-1 rounded-md border py-2 text-sm font-medium hover:bg-accent"
+            className="flex-1 rounded-md border py-2 text-sm font-medium hover:bg-accent active:scale-[0.98] cursor-pointer transition-all"
           >
             Cancel
           </button>
@@ -494,7 +405,7 @@ function RestoreConfirmModal({
               const cost = sizeGb * tier.perGB + (fileCount / 1000) * tier.perRequest;
               onConfirm(selectedTier.charAt(0).toUpperCase() + selectedTier.slice(1) as "Expedited" | "Standard" | "Bulk", cost);
             }}
-            className="flex-1 rounded-md bg-amber-500 py-2 text-sm font-medium text-white hover:bg-amber-600"
+            className="flex-1 rounded-md bg-amber-500 py-2 text-sm font-medium text-white hover:bg-amber-600 active:scale-[0.98] cursor-pointer transition-all"
           >
             <span className="flex items-center justify-center gap-1.5">
               <Pickaxe className="h-3.5 w-3.5" />
@@ -508,26 +419,36 @@ function RestoreConfirmModal({
 }
 
 function DeleteConfirmModal({
-  selections,
+  selections: initialSelections,
   onConfirm,
   onCancel,
 }: {
   selections: Selection[];
-  onConfirm: () => void;
+  onConfirm: (items: Selection[]) => void;
   onCancel: () => void;
 }) {
-  const count = selections.length;
+  const [items, setItems] = useState(initialSelections);
+  const count = items.length;
   const isSingle = count === 1;
-  const folderCount = selections.filter(s => s.type === "folder").length;
+  const folderCount = items.filter(s => s.type === "folder").length;
   const fileCount = count - folderCount;
 
   const itemLabel = isSingle
-    ? selections[0].type === "folder" ? "Folder" : "File"
+    ? items[0].type === "folder" ? "Folder" : "File"
     : `${count} Items`;
 
   const description = isSingle
-    ? <>Permanently delete <span className="font-medium">{selections[0].name}</span>{selections[0].type === "folder" ? " and all its contents" : ""}?</>
+    ? <>Permanently delete <span className="font-medium">{items[0].name}</span>{items[0].type === "folder" ? " and all its contents" : ""}?</>
     : <>Permanently delete <span className="font-medium">{fileCount > 0 ? `${fileCount} file${fileCount !== 1 ? "s" : ""}` : ""}{fileCount > 0 && folderCount > 0 ? " and " : ""}{folderCount > 0 ? `${folderCount} folder${folderCount !== 1 ? "s" : ""}` : ""}</span>?</>;
+
+  function removeItem(key: string) {
+    const next = items.filter(s => s.key !== key);
+    if (next.length === 0) {
+      onCancel();
+    } else {
+      setItems(next);
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onCancel}>
@@ -542,34 +463,48 @@ function DeleteConfirmModal({
         <div className="space-y-4 mb-8">
           <p className="text-sm">{description}</p>
           {!isSingle && (
-            <ul className="max-h-48 overflow-auto rounded-lg bg-muted/50 px-4 py-3 space-y-2.5">
-              {selections.map((s) => (
+            <ul className="max-h-48 overflow-y-scroll rounded-lg bg-muted/50 px-4 py-3 space-y-2.5 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20">
+              {items.map((s) => (
                 <li key={s.key} className="flex items-center gap-1.5 text-xs text-muted-foreground" title={s.name}>
                   {s.type === "folder" ? (
                     <Folder className="h-3 w-3 shrink-0" />
                   ) : (
                     <FileIcon className="h-3 w-3 shrink-0" />
                   )}
-                  <span className="truncate">{s.name}</span>
+                  <span className="flex-1 truncate">{s.name}</span>
+                  <button
+                    onClick={() => removeItem(s.key)}
+                    className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground/50 hover:bg-muted-foreground/15 hover:text-foreground cursor-pointer transition-colors shrink-0"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
                 </li>
               ))}
             </ul>
           )}
+          {isSingle && (
+            <div className="rounded-lg bg-muted/50 px-4 py-3">
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                {items[0].type === "folder" ? <Folder className="h-3 w-3 shrink-0" /> : <FileIcon className="h-3 w-3 shrink-0" />}
+                <span className="truncate">{items[0].name}</span>
+              </div>
+            </div>
+          )}
           <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 dark:bg-red-950/30 dark:text-red-300">
-            <p>This action cannot be undone. {isSingle ? `The ${selections[0].type}` : "These items"} will be removed from S3 permanently.</p>
+            <p>This action cannot be undone. {isSingle ? `The ${items[0].type}` : "These items"} will be removed from S3 permanently.</p>
           </div>
         </div>
 
         <div className="flex gap-3">
           <button
             onClick={onCancel}
-            className="flex-1 rounded-lg border py-2.5 text-sm font-medium hover:bg-accent transition-colors cursor-pointer"
+            className="flex-1 rounded-md border py-2 text-sm font-medium hover:bg-accent active:scale-[0.98] cursor-pointer transition-all"
           >
             Cancel
           </button>
           <button
-            onClick={onConfirm}
-            className="flex-1 rounded-lg bg-red-600 py-2.5 text-sm font-medium text-white hover:bg-red-700 transition-colors cursor-pointer"
+            onClick={() => onConfirm(items)}
+            className="flex-1 rounded-md bg-red-600 py-2 text-sm font-medium text-white hover:bg-red-700 active:scale-[0.98] cursor-pointer transition-all"
           >
             <span className="flex items-center justify-center gap-1.5">
               <Trash2 className="h-3.5 w-3.5" />

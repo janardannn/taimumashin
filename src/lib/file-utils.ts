@@ -20,6 +20,16 @@ export function getFileExtension(name: string): string {
   return name.split(".").pop()?.toLowerCase() || "";
 }
 
+/** Strip non-ASCII and problematic characters from a filename (no slashes). */
+export function sanitizeFilename(name: string): string {
+  return name.replace(/[^\x20-\x7E]/g, "_").replace(/_{2,}/g, "_");
+}
+
+/** Sanitize each segment of a path (preserves `/` separators). */
+export function sanitizePath(path: string): string {
+  return path.split("/").map(sanitizeFilename).join("/");
+}
+
 export function formatDate(date: Date | string): string {
   return new Date(date).toLocaleDateString("en-IN", {
     day: "numeric",
