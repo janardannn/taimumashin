@@ -171,7 +171,7 @@ export function FolderStatusBar({
         <div className="flex items-center gap-2 rounded-md bg-blue-50 px-3 py-1.5 dark:bg-blue-950/30">
           <Pickaxe className="h-3.5 w-3.5 text-blue-600 animate-pulse" />
           <span className="text-xs">
-            Thawing {restoreStatus.fileCount} file{restoreStatus.fileCount !== 1 ? "s" : ""} — {timeAgo}
+            Restoring {restoreStatus.fileCount} file{restoreStatus.fileCount !== 1 ? "s" : ""} — {timeAgo}
           </span>
         </div>
       );
@@ -215,37 +215,29 @@ export function FolderStatusBar({
         <div className="flex items-center gap-2">
           {selections.length > 0 ? (
             <>
+              <span className="text-xs text-muted-foreground">
+                {selections.length} selected
+              </span>
               <div className="flex items-center gap-1">
-                {/* Delete */}
                 <button
                   onClick={() => setShowDeleteConfirm(true)}
-                  className="group inline-flex items-center h-7 rounded-md bg-red-500/10 px-2 text-red-500 cursor-pointer active:scale-[0.97] transition-all duration-200 hover:bg-red-500/15"
+                  className="inline-flex items-center gap-1.5 h-7 rounded-md bg-red-500/10 px-2.5 text-xs font-medium text-red-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-red-500/15"
                 >
-                  <Trash2 className="h-3.5 w-3.5 shrink-0" />
-                  <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium transition-all duration-200 ease-out group-hover:max-w-[250px] group-hover:pl-1.5">
-                    {selections.length === 1 ? selections[0].name : `${selections.length} items`} · Delete
-                  </span>
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete
                 </button>
-
-                {/* Download */}
                 <button
                   onClick={handleDownloadSelected}
-                  className="group inline-flex items-center h-7 rounded-md bg-emerald-500/10 px-2 text-emerald-500 cursor-pointer active:scale-[0.97] transition-all duration-200 hover:bg-emerald-500/15"
+                  className="inline-flex items-center gap-1.5 h-7 rounded-md bg-emerald-500/10 px-2.5 text-xs font-medium text-emerald-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-emerald-500/15"
                 >
-                  <Download className="h-3.5 w-3.5 shrink-0" />
-                  <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium transition-all duration-200 ease-out group-hover:max-w-[250px] group-hover:pl-1.5">
-                    {selections.length === 1 ? selections[0].name : `${selections.length} items`} · Download
-                  </span>
+                  <Download className="h-3.5 w-3.5" />
+                  Download
                 </button>
-
-                {/* Move */}
                 <button
-                  className="group inline-flex items-center h-7 rounded-md bg-blue-500/10 px-2 text-blue-500 cursor-pointer active:scale-[0.97] transition-all duration-200 hover:bg-blue-500/15"
+                  className="inline-flex items-center gap-1.5 h-7 rounded-md bg-blue-500/10 px-2.5 text-xs font-medium text-blue-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-blue-500/15"
                 >
-                  <FolderInput className="h-3.5 w-3.5 shrink-0" />
-                  <span className="max-w-0 overflow-hidden whitespace-nowrap text-xs font-medium transition-all duration-200 ease-out group-hover:max-w-[250px] group-hover:pl-1.5">
-                    {selections.length === 1 ? selections[0].name : `${selections.length} items`} · Move
-                  </span>
+                  <FolderInput className="h-3.5 w-3.5" />
+                  Move
                 </button>
               </div>
               <div className="h-4 w-px bg-border" />

@@ -52,13 +52,16 @@ export async function GET() {
       totalFiles: fileStats._count,
       totalFolders: folderCount,
       totalSize: Number(fileStats._sum.size || 0),
-      totalPreviewSize: Number(fileStats._sum.previewSize || 0),
+      totalPreviewSize: Number(fileStats._sum.previewSize ?? 0),
       activeRestores,
       restoresThisMonth: monthlyRestores._count,
       dataRestoredThisMonth: Number(monthlyRestores._sum.totalSize || 0),
       retrievalCostThisMonth: monthlyRestores._sum.estimatedCost || 0,
       region: user?.region || "ap-south-1",
-      recentRestores,
+      recentRestores: recentRestores.map((r) => ({
+        ...r,
+        totalSize: Number(r.totalSize),
+      })),
     });
   } catch (err) {
     console.error("Dashboard stats error:", err);
