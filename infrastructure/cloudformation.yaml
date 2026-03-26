@@ -2,8 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   taimumashin — One-click deployment of user-side storage infrastructure.
   Creates an S3 bucket with Glacier lifecycle, a Lambda for restore
-  notifications, an IAM OIDC provider and role for browser-based S3
-  access, and SES email identity.
+  notifications, an IAM OIDC provider and role for browser-based S3 access.
 
 Parameters:
   TaimumashinIssuerUrl:
@@ -22,15 +21,6 @@ Parameters:
     Description: >
       Your taimumashin instance URL for webhook callbacks.
       The Lambda function POSTs restore-complete notifications here.
-
-  NotificationEmail:
-    Type: String
-    AllowedPattern: "^[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}$"
-    ConstraintDescription: Must be a valid email address.
-    Description: >
-      Email address for restore-complete alerts. An SES verification email
-      will be sent to this address after deployment — you must confirm it
-      before notifications can be delivered.
 
   LifecycleDays:
     Type: Number
@@ -113,14 +103,6 @@ Resources:
                 Resource: "arn:aws:s3:::*"
               - Effect: Allow
                 Action:
-                  - "ses:SendEmail"
-                  - "ses:SendRawEmail"
-                Resource: "*"
-                Condition:
-                  StringEquals:
-                    "ses:FromAddress": !Ref NotificationEmail
-              - Effect: Allow
-                Action:
                   - "logs:CreateLogGroup"
                   - "logs:CreateLogStream"
                   - "logs:PutLogEvents"
@@ -131,8 +113,8 @@ Resources:
     Properties:
       FunctionName: !Sub "taimumashin-notify-${AWS::StackName}"
       Description: >
-        Sends restore-complete notifications via webhook + SES when
-        S3 Glacier restores complete.
+        POSTs restore-complete webhook when S3 Glacier restores finish.
+        Email notifications are handled by the app server.
       Runtime: python3.12
       Handler: index.handler
       Role: !GetAtt LambdaExecutionRole.Arn
@@ -141,14 +123,13 @@ Resources:
       Environment:
         Variables:
           WEBHOOK_URL: !Ref WebhookUrl
-          NOTIFICATION_EMAIL: !Ref NotificationEmail
       Code:
         ZipFile: |
           """
           taimumashin restore notifier.
 
           Handles s3:ObjectRestore:Completed events — POSTs to the app
-          webhook and sends an SES email notification.
+          webhook so the server can update the DB and send email.
           """
 
           import json
@@ -164,10 +145,8 @@ Resources:
           logger.setLevel(logging.INFO)
 
           s3 = boto3.client("s3")
-          ses = boto3.client("ses")
 
           WEBHOOK_URL = os.environ["WEBHOOK_URL"]
-          NOTIFICATION_EMAIL = os.environ["NOTIFICATION_EMAIL"]
 
 
           def handler(event, context):
@@ -222,25 +201,6 @@ Resources:
               except Exception as exc:
                   logger.error("Webhook POST failed: %s", exc)
 
-              if NOTIFICATION_EMAIL:
-                  try:
-                      file_name = Path(key).name
-                      ses.send_email(
-                          Source=NOTIFICATION_EMAIL,
-                          Destination={"ToAddresses": [NOTIFICATION_EMAIL]},
-                          Message={
-                              "Subject": {"Data": f"[taimumashin] Restore complete: {file_name}"},
-                              "Body": {"Text": {"Data": (
-                                  f"Your file has been restored from Glacier.\n\n"
-                                  f"File: {key}\nBucket: {bucket}\nExpires: {expires_at}\n\n"
-                                  f"You can now download this file from your taimumashin dashboard.\n"
-                              )}},
-                          },
-                      )
-                      logger.info("Notification email sent to %s", NOTIFICATION_EMAIL)
-                  except Exception as exc:
-                      logger.error("SES send failed: %s", exc)
-
   LambdaInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -293,11 +253,6 @@ Resources:
                 Action:
                   - "s3:ListBucket"
                 Resource: !Sub "arn:aws:s3:::${MediaBucket}"
-
-  SesEmailIdentity:
-    Type: AWS::SES::EmailIdentity
-    Properties:
-      EmailIdentity: !Ref NotificationEmail
 
 Outputs:
   RoleArn:
