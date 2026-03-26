@@ -10,6 +10,35 @@ function safeBigInt(val: unknown): bigint {
   }
 }
 
+// Called by the client when it detects files are accessible again (probe returned 200/206).
+// Marks matching RESTORING jobs as READY — fallback for when the Lambda webhook doesn't fire.
+export async function PATCH(req: Request) {
+  const session = await auth();
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { folderPath } = await req.json();
+  if (!folderPath) {
+    return NextResponse.json({ error: "Missing folderPath" }, { status: 400 });
+  }
+
+  const prisma = await getPrisma();
+  const result = await prisma.restoreJob.updateMany({
+    where: {
+      userId: session.user.id,
+      folderPath,
+      status: "RESTORING",
+    },
+    data: {
+      status: "READY",
+      restoredAt: new Date(),
+    },
+  });
+
+  return NextResponse.json({ updated: result.count });
+}
+
 // DB-only: S3 restore requests are handled client-side via useS3 hook
 // This route accepts the result (fileCount, totalSize) and creates a DB record
 export async function POST(req: Request) {

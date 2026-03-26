@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useCallback, useState, useEffect, useRef } from "react";
 import { Upload, Trash2, Download, ChevronDown, ChevronUp, X, Check, AlertCircle } from "lucide-react";
+import { useSession } from "next-auth/react";
 import { useS3 } from "@/hooks/use-s3";
 import { getFileType, sanitizePath } from "@/lib/file-utils";
 import { canGenerateThumbnail, generateImageThumbnail } from "@/lib/preview-generator";
@@ -70,6 +71,7 @@ export function OperationProvider({ children }: { children: React.ReactNode }) {
   const [operations, setOperations] = useState<Operation[]>([]);
   const [collapsed, setCollapsed] = useState(false);
   const refreshCallbacks = useRef(new Set<() => void>());
+  const { data: session } = useSession();
   const s3 = useS3({ lazy: true });
 
   // Stable ref so async loops always see latest s3
@@ -139,6 +141,8 @@ export function OperationProvider({ children }: { children: React.ReactNode }) {
             const key = `${prefix}/${subPath ? subPath + "/" : ""}${safePath}`;
 
             const metadata: Record<string, string> = {};
+            if (session?.user?.id) metadata["user-id"] = session.user.id;
+            if (decodedFolder) metadata["folder-path"] = decodedFolder;
             if (file.lastModified) {
               metadata["original-last-modified"] = new Date(file.lastModified).toISOString();
             }

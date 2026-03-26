@@ -156,6 +156,40 @@ export function FileBrowser({ path }: FileBrowserProps) {
     loadContents();
   }, [loadContents]);
 
+  // When a restore job is active, probe a file to check if it's actually done.
+  // Fallback for when the Lambda webhook doesn't fire.
+  useEffect(() => {
+    if (!s3.ready || !restoreStatus || restoreStatus.status !== "RESTORING" || files.length === 0) return;
+
+    let cancelled = false;
+
+    async function checkRestoreComplete() {
+      // Pick the first originals/ file to probe
+      const sample = files.find((f) => f.key.startsWith("originals/"));
+      if (!sample) return;
+
+      try {
+        const url = await s3.getPresignedUrl(sample.key);
+        const probe = await fetch(url, { headers: { Range: "bytes=0-0" } });
+        if ((probe.status === 200 || probe.status === 206) && !cancelled) {
+          // Restore is complete — update the DB
+          await fetch("/api/archive/restore", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ folderPath: decodedPath || "/" }),
+          });
+          // Refresh to clear the status bar
+          loadContents();
+        }
+      } catch {
+        // Probe failed — restore still in progress or network error
+      }
+    }
+
+    checkRestoreComplete();
+    return () => { cancelled = true; };
+  }, [s3.ready, restoreStatus, files, decodedPath, s3.getPresignedUrl, loadContents]);
+
   // Lazy-load preview URLs via S3 presigned URLs
   const previewLoadedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
