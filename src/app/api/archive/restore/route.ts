@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getPrisma } from "@/lib/db";
+import { sendRestoreEmail } from "@/lib/email";
 
 function safeBigInt(val: unknown): bigint {
   try {
@@ -35,6 +36,26 @@ export async function PATCH(req: Request) {
       restoredAt: new Date(),
     },
   });
+
+  // Send email if a job was resolved
+  if (result.count > 0) {
+    const user = await prisma.user.findUnique({
+      where: { id: session.user.id },
+      select: { notificationEmail: true, email: true },
+    });
+    const job = await prisma.restoreJob.findUnique({
+      where: { id: jobId },
+      select: { folderPath: true, fileCount: true },
+    });
+    const to = user?.notificationEmail || user?.email;
+    if (to && job) {
+      try {
+        await sendRestoreEmail(to, job.folderPath, job.fileCount);
+      } catch (err) {
+        console.error("Failed to send restore email:", err);
+      }
+    }
+  }
 
   return NextResponse.json({ updated: result.count });
 }
