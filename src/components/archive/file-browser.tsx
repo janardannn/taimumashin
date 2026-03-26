@@ -94,7 +94,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
   const [folders, setFolders] = useState<S3Folder[]>([]);
   const [files, setFiles] = useState<S3File[]>([]);
   const [stats, setStats] = useState({ totalFiles: 0, totalSize: 0, archivedCount: 0, availableCount: 0 });
-  const [restoreStatus, setRestoreStatus] = useState<{ status: string; requestedAt: string; fileCount: number } | null>(null);
+  const [restoreJobs, setRestoreJobs] = useState<{ id: string; status: string; requestedAt: string; fileCount: number; tier: string | null; keys: string[] }[]>([]);
   const [region, setRegion] = useState("us-east-1");
   const [loading, setLoading] = useState(true);
   const [showUpload, setShowUpload] = useState(false);
@@ -141,7 +141,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
       setFolders(folderResults);
       setFiles(fileResults);
       setStats(data.stats);
-      setRestoreStatus(data.restoreStatus);
+      setRestoreJobs(data.restoreJobs || []);
       setRegion(data.region || "us-east-1");
     } catch (err) {
       console.error("Failed to load contents:", err);
@@ -156,39 +156,41 @@ export function FileBrowser({ path }: FileBrowserProps) {
     loadContents();
   }, [loadContents]);
 
-  // When a restore job is active, probe a file to check if it's actually done.
-  // Fallback for when the Lambda webhook doesn't fire.
+  // Per-job probe: check one key from each active restore job to detect completion.
+  const probedJobsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!s3.ready || !restoreStatus || restoreStatus.status !== "RESTORING" || files.length === 0) return;
+    const activeJobs = restoreJobs.filter((j) => j.status === "RESTORING" && j.keys.length > 0);
+    if (!s3.ready || activeJobs.length === 0) return;
 
     let cancelled = false;
+    let anyResolved = false;
 
-    async function checkRestoreComplete() {
-      // Pick the first originals/ file to probe
-      const sample = files.find((f) => f.key.startsWith("originals/"));
-      if (!sample) return;
+    async function checkJobs() {
+      for (const job of activeJobs) {
+        if (cancelled || probedJobsRef.current.has(job.id)) continue;
 
-      try {
-        const url = await s3.getPresignedUrl(sample.key);
-        const probe = await fetch(url, { headers: { Range: "bytes=0-0" } });
-        if ((probe.status === 200 || probe.status === 206) && !cancelled) {
-          // Restore is complete — update the DB
-          await fetch("/api/archive/restore", {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ folderPath: decodedPath || "/" }),
-          });
-          // Refresh to clear the status bar
-          loadContents();
+        try {
+          const url = await s3.getPresignedUrl(job.keys[0]);
+          const probe = await fetch(url, { headers: { Range: "bytes=0-0" } });
+          if ((probe.status === 200 || probe.status === 206) && !cancelled) {
+            probedJobsRef.current.add(job.id);
+            await fetch("/api/archive/restore", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ jobId: job.id }),
+            });
+            anyResolved = true;
+          }
+        } catch {
+          // Still restoring or network error
         }
-      } catch {
-        // Probe failed — restore still in progress or network error
       }
+      if (anyResolved && !cancelled) loadContents();
     }
 
-    checkRestoreComplete();
+    checkJobs();
     return () => { cancelled = true; };
-  }, [s3.ready, restoreStatus, files, decodedPath, s3.getPresignedUrl, loadContents]);
+  }, [s3.ready, restoreJobs, s3.getPresignedUrl, loadContents]);
 
   // Lazy-load preview URLs via S3 presigned URLs
   const previewLoadedRef = useRef<Set<string>>(new Set());
@@ -358,7 +360,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
             <FolderStatusBar
               folderPath={decodedPath}
               stats={stats}
-              restoreStatus={isInstantPath ? null : restoreStatus}
+              restoreJobs={isInstantPath ? [] : restoreJobs}
               selections={selections}
               onRestoreComplete={loadContents}
               onDeleteComplete={handleDeleteComplete}

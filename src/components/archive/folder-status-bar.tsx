@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download, FolderPlus, Upload, FolderInput } from "lucide-react";
+import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download, FolderPlus, Upload, FolderInput, ChevronDown } from "lucide-react";
 import { formatFileSize } from "@/lib/file-utils";
 import { useS3 } from "@/hooks/use-s3";
 import { useOperations, type DeleteSelection } from "@/components/operation-provider";
@@ -13,10 +13,13 @@ interface FolderStats {
   availableCount: number;
 }
 
-interface RestoreStatus {
+interface RestoreJob {
+  id: string;
   status: string;
   requestedAt: string;
   fileCount: number;
+  tier: string | null;
+  keys: string[];
 }
 
 interface Selection {
@@ -29,7 +32,7 @@ interface Selection {
 interface FolderStatusBarProps {
   folderPath: string;
   stats: FolderStats;
-  restoreStatus: RestoreStatus | null;
+  restoreJobs: RestoreJob[];
   selections: Selection[];
   onRestoreComplete: () => void;
   onDeleteComplete: () => void;
@@ -42,7 +45,7 @@ interface FolderStatusBarProps {
 export function FolderStatusBar({
   folderPath,
   stats,
-  restoreStatus,
+  restoreJobs,
   selections,
   onRestoreComplete,
   onDeleteComplete,
@@ -56,6 +59,8 @@ export function FolderStatusBar({
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [downloadCooldown, setDownloadCooldown] = useState(false);
+  const [showRestoreList, setShowRestoreList] = useState(false);
+  const [viewingJob, setViewingJob] = useState<RestoreJob | null>(null);
 
   const s3 = useS3();
   const ops = useOperations();
@@ -109,12 +114,14 @@ export function FolderStatusBar({
 
       let fileCount = 0;
       let totalSizeBytes = 0;
+      const restoredKeys: string[] = [];
 
       for (const obj of keysToRestore) {
         try {
           await s3.restoreObject(obj.Key, 7, tier);
           fileCount++;
           totalSizeBytes += obj.Size;
+          restoredKeys.push(obj.Key);
         } catch {
           // Already restoring, not in Glacier, or standard -- skip
         }
@@ -128,7 +135,7 @@ export function FolderStatusBar({
       const res = await fetch("/api/archive/restore", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folderPath, fileCount, totalSize: totalSizeBytes, tier: tier.toLowerCase(), estimatedCost }),
+        body: JSON.stringify({ folderPath, fileCount, totalSize: totalSizeBytes, tier: tier.toLowerCase(), estimatedCost, keys: restoredKeys }),
       });
 
       const data = await res.json();
@@ -181,44 +188,74 @@ export function FolderStatusBar({
       );
     }
 
-    if (restoreStatus && (restoreStatus.status === "PENDING" || restoreStatus.status === "RESTORING")) {
-      const timeAgo = getTimeAgo(new Date(restoreStatus.requestedAt));
-      return (
-        <div className="flex items-center gap-2 rounded-md bg-blue-50 px-3 py-1.5 dark:bg-blue-950/30">
-          <Pickaxe className="h-3.5 w-3.5 text-blue-600 animate-pulse" />
-          <span className="text-xs">
-            Restoring {restoreStatus.fileCount} file{restoreStatus.fileCount !== 1 ? "s" : ""} — {timeAgo}
-          </span>
-        </div>
-      );
-    }
-
     if (totalFiles === 0) return null;
 
+    const activeJobs = restoreJobs.filter((j) => j.status === "PENDING" || j.status === "RESTORING");
     const hasSelection = selections.length > 0;
-    const selectedFileCount = hasSelection ? selections.reduce((sum, s) => sum + (s.type === "file" ? 1 : 0), 0) + selections.filter((s) => s.type === "folder").length : 0;
     const selectedSize = hasSelection ? selections.reduce((sum, s) => sum + s.size, 0) : 0;
-    const displayCount = hasSelection ? selections.length : totalFiles;
-    const displaySize = hasSelection ? formatFileSize(selectedSize) : sizeLabel;
 
     return (
-      <div className="flex items-center gap-2">
-        <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-1.5">
-          <Snowflake className="h-3.5 w-3.5 text-blue-500" />
-          <span className="text-xs">
-            {hasSelection
-              ? `${selections.length} selected (${displaySize})`
-              : `${totalFiles} file${totalFiles !== 1 ? "s" : ""} (${sizeLabel})`}
-          </span>
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          {/* Stats chip */}
+          <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-1.5">
+            <Snowflake className="h-3.5 w-3.5 text-blue-500" />
+            <span className="text-xs">
+              {hasSelection
+                ? `${selections.length} selected (${formatFileSize(selectedSize)})`
+                : `${totalFiles} file${totalFiles !== 1 ? "s" : ""} (${sizeLabel})`}
+            </span>
+          </div>
+
+          {/* Active restore status */}
+          {activeJobs.length === 1 && (
+            <button
+              onClick={() => setViewingJob(activeJobs[0])}
+              className="flex items-center gap-2 rounded-md bg-blue-50 px-3 py-1.5 dark:bg-blue-950/30 cursor-pointer hover:bg-blue-100 dark:hover:bg-blue-950/50 transition-colors"
+            >
+              <Pickaxe className="h-3.5 w-3.5 text-blue-600 animate-pulse" />
+              <span className="text-xs">
+                Restoring {activeJobs[0].fileCount} file{activeJobs[0].fileCount !== 1 ? "s" : ""}{activeJobs[0].tier ? ` (${activeJobs[0].tier})` : ""} — {getTimeAgo(new Date(activeJobs[0].requestedAt))}
+              </span>
+            </button>
+          )}
+          {activeJobs.length > 1 && (
+            <button
+              onClick={() => setShowRestoreList((v) => !v)}
+              className="flex items-center gap-2 rounded-md bg-blue-50 px-3 py-1.5 dark:bg-blue-950/30 cursor-pointer hover:bg-blue-100 dark:hover:bg-blue-950/50 transition-colors"
+            >
+              <Pickaxe className="h-3.5 w-3.5 text-blue-600 animate-pulse" />
+              <span className="text-xs">{activeJobs.length} active restores</span>
+              <ChevronDown className={`h-3 w-3 text-blue-600 transition-transform ${showRestoreList ? "rotate-180" : ""}`} />
+            </button>
+          )}
+
+          {/* Restore button — always visible */}
+          <button
+            onClick={() => setShowRestoreConfirm(true)}
+            disabled={restoring}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-amber-500/15 px-2.5 text-xs font-medium text-amber-500 hover:bg-amber-500/25 active:scale-[0.97] cursor-pointer disabled:opacity-50 transition-all"
+          >
+            <Pickaxe className="h-3 w-3" />
+            {restoring ? "..." : hasSelection ? `Restore ${selections.length} file${selections.length !== 1 ? "s" : ""}` : "Restore"}
+          </button>
         </div>
-        <button
-          onClick={() => setShowRestoreConfirm(true)}
-          disabled={restoring}
-          className="inline-flex h-7 items-center gap-1.5 rounded-md bg-amber-500/15 px-2.5 text-xs font-medium text-amber-500 hover:bg-amber-500/25 active:scale-[0.97] cursor-pointer disabled:opacity-50 transition-all"
-        >
-          <Pickaxe className="h-3 w-3" />
-          {restoring ? "..." : hasSelection ? `Restore ${selections.length} file${selections.length !== 1 ? "s" : ""}` : "Restore folder"}
-        </button>
+
+        {/* Expanded job list */}
+        {showRestoreList && activeJobs.length > 1 && (
+          <div className="rounded-md border border-border bg-background p-2 space-y-1.5">
+            {activeJobs.map((job) => (
+              <button
+                key={job.id}
+                onClick={() => setViewingJob(job)}
+                className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground w-full rounded hover:bg-accent cursor-pointer transition-colors"
+              >
+                <Pickaxe className="h-3 w-3 text-blue-500 shrink-0" />
+                <span>{job.fileCount} file{job.fileCount !== 1 ? "s" : ""}{job.tier ? ` (${job.tier})` : ""} — {getTimeAgo(new Date(job.requestedAt))}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -324,6 +361,14 @@ export function FolderStatusBar({
           selections={selections}
           onConfirm={(items) => handleDelete(items)}
           onCancel={() => setShowDeleteConfirm(false)}
+        />
+      )}
+
+      {/* Restore job detail modal */}
+      {viewingJob && (
+        <RestoreJobDetailModal
+          job={viewingJob}
+          onClose={() => setViewingJob(null)}
         />
       )}
     </>
@@ -531,6 +576,51 @@ function DeleteConfirmModal({
               <Trash2 className="h-3.5 w-3.5" />
               Delete{!isSingle ? ` (${count})` : ""}
             </span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RestoreJobDetailModal({ job, onClose }: { job: RestoreJob; onClose: () => void }) {
+  const timeAgo = getTimeAgo(new Date(job.requestedAt));
+  const keys = Array.isArray(job.keys) ? job.keys as string[] : [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-xl border border-border bg-background p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-base font-semibold">Restore Job</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {job.fileCount} file{job.fileCount !== 1 ? "s" : ""}{job.tier ? ` · ${job.tier}` : ""} · {timeAgo}
+            </p>
+          </div>
+          <button onClick={onClose} className="flex h-7 w-7 items-center justify-center rounded-md bg-muted-foreground/15 text-muted-foreground hover:bg-muted-foreground/30 hover:text-foreground cursor-pointer transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {keys.length > 0 ? (
+          <ul className="max-h-64 overflow-y-scroll rounded-lg bg-muted/50 px-4 py-3 space-y-2 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20">
+            {keys.map((key) => (
+              <li key={key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <FileIcon className="h-3 w-3 shrink-0" />
+                <span className="truncate">{key.split("/").pop()}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted-foreground">No file details available for this job.</p>
+        )}
+
+        <div className="mt-4 flex justify-end">
+          <button
+            onClick={onClose}
+            className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-accent active:scale-[0.98] cursor-pointer transition-all"
+          >
+            Close
           </button>
         </div>
       </div>
