@@ -615,14 +615,6 @@ function RestoreJobDetailModal({ job, onClose }: { job: RestoreJob; onClose: () 
           <p className="text-sm text-muted-foreground">No file details available for this job.</p>
         )}
 
-        <div className="mt-4 flex justify-end">
-          <button
-            onClick={onClose}
-            className="rounded-md border px-4 py-2 text-sm font-medium hover:bg-accent active:scale-[0.98] cursor-pointer transition-all"
-          >
-            Close
-          </button>
-        </div>
       </div>
     </div>
   );

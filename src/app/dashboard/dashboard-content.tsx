@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { HardDrive, FolderOpen, FileText, Pickaxe, Download } from "lucide-react";
+import { HardDrive, FolderOpen, FileText, Pickaxe, Download, X, File as FileIcon } from "lucide-react";
 import { formatFileSize } from "@/lib/file-utils";
 import { REGIONS as PRICING_REGIONS, getRegionPricing, PRICING_DATE } from "@/lib/pricing";
 
@@ -27,11 +27,13 @@ interface Stats {
     requestedAt: string;
     restoredAt: string | null;
     expiresAt: string | null;
+    keys: string[];
   }[];
 }
 
 export function DashboardContent() {
   const [stats, setStats] = useState<Stats | null>(null);
+  const [viewingJob, setViewingJob] = useState<Stats["recentRestores"][number] | null>(null);
 
   useEffect(() => {
     fetch("/api/dashboard/stats")
@@ -165,7 +167,11 @@ export function DashboardContent() {
         ) : (
           <div className="rounded-lg border divide-y">
             {stats.recentRestores.map((job) => (
-              <div key={job.id} className="flex items-center justify-between p-3">
+              <button
+                key={job.id}
+                onClick={() => setViewingJob(job)}
+                className="flex items-center justify-between p-3 w-full text-left hover:bg-accent/50 cursor-pointer transition-colors"
+              >
                 <div>
                   <p className="text-sm font-medium">{job.folderPath}</p>
                   <p className="text-xs text-muted-foreground">
@@ -189,11 +195,68 @@ export function DashboardContent() {
                    job.status === "EXPIRED" ? "Expired" :
                    job.status}
                 </span>
-              </div>
+              </button>
             ))}
           </div>
         )}
       </section>
+
+      {viewingJob && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setViewingJob(null)}>
+          <div className="w-full max-w-lg rounded-xl border border-border bg-background p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-base font-semibold">Restore Job</h2>
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  {viewingJob.folderPath} · {viewingJob.fileCount} file{viewingJob.fileCount !== 1 ? "s" : ""}
+                  {viewingJob.tier ? ` · ${viewingJob.tier}` : ""}
+                  {" · "}{new Date(viewingJob.requestedAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}
+                </p>
+              </div>
+              <button onClick={() => setViewingJob(null)} className="flex h-7 w-7 items-center justify-center rounded-md bg-muted-foreground/15 text-muted-foreground hover:bg-muted-foreground/30 hover:text-foreground cursor-pointer transition-colors">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 mb-4">
+              <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
+                viewingJob.status === "READY"
+                  ? "bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-300"
+                  : viewingJob.status === "RESTORING"
+                  ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                  : "bg-muted text-muted-foreground"
+              }`}>
+                {viewingJob.status === "READY" ? "Available" :
+                 viewingJob.status === "RESTORING" ? "Restoring" :
+                 viewingJob.status === "EXPIRED" ? "Expired" :
+                 viewingJob.status}
+              </span>
+              {viewingJob.estimatedCost != null && viewingJob.estimatedCost > 0 && (
+                <span className="text-xs text-muted-foreground">~${viewingJob.estimatedCost < 0.01 ? viewingJob.estimatedCost.toFixed(4) : viewingJob.estimatedCost.toFixed(2)}</span>
+              )}
+              {viewingJob.expiresAt && (
+                <span className="text-xs text-muted-foreground">
+                  Expires {new Date(viewingJob.expiresAt).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}
+                </span>
+              )}
+            </div>
+
+            {viewingJob.keys.length > 0 ? (
+              <ul className="max-h-64 overflow-y-scroll rounded-lg bg-muted/50 px-4 py-3 space-y-2 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20">
+                {viewingJob.keys.map((key) => (
+                  <li key={key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <FileIcon className="h-3 w-3 shrink-0" />
+                    <span className="truncate">{key.split("/").pop()}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground">No file details available for this job.</p>
+            )}
+
+          </div>
+        </div>
+      )}
     </>
   );
 }

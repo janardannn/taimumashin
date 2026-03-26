@@ -43,7 +43,7 @@ export async function GET() {
         take: 10,
         select: {
           id: true, folderPath: true, status: true, tier: true, fileCount: true, totalSize: true,
-          estimatedCost: true, requestedAt: true, restoredAt: true, expiresAt: true,
+          estimatedCost: true, requestedAt: true, restoredAt: true, expiresAt: true, keys: true,
         },
       }),
     ]);
@@ -61,6 +61,7 @@ export async function GET() {
       recentRestores: recentRestores.map((r) => ({
         ...r,
         totalSize: Number(r.totalSize),
+        keys: Array.isArray(r.keys) ? r.keys as string[] : [],
       })),
     });
   } catch (err) {
