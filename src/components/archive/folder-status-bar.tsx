@@ -23,6 +23,7 @@ interface Selection {
   type: "file" | "folder";
   name: string;
   key: string; // S3 key for files, prefix for folders
+  size: number;
 }
 
 interface FolderStatusBarProps {
@@ -85,14 +86,31 @@ export function FolderStatusBar({
         return;
       }
 
-      const prefix = getS3Prefix();
-      const objects = await s3.listAllObjects(prefix);
+      // If files are selected, restore only those. Otherwise restore the whole folder.
+      let keysToRestore: { Key: string; Size: number }[];
+
+      if (selections.length > 0) {
+        // Resolve selections — files are direct keys, folders need listing
+        keysToRestore = [];
+        for (const sel of selections) {
+          if (sel.type === "file") {
+            keysToRestore.push({ Key: sel.key, Size: sel.size });
+          } else {
+            const objects = await s3.listAllObjects(sel.key);
+            for (const obj of objects) {
+              keysToRestore.push({ Key: obj.Key, Size: obj.Size });
+            }
+          }
+        }
+      } else {
+        const prefix = getS3Prefix();
+        keysToRestore = (await s3.listAllObjects(prefix)).map((o) => ({ Key: o.Key, Size: o.Size }));
+      }
 
       let fileCount = 0;
       let totalSizeBytes = 0;
 
-      // Issue restore requests directly from the client
-      for (const obj of objects) {
+      for (const obj of keysToRestore) {
         try {
           await s3.restoreObject(obj.Key, 7, tier);
           fileCount++;
@@ -102,13 +120,11 @@ export function FolderStatusBar({
         }
       }
 
-      // Only track in DB if at least one file actually needed restoring
       if (fileCount === 0) {
         setError("No files need restoring — they may still be in standard storage.");
         return;
       }
 
-      // Notify server for DB tracking only
       const res = await fetch("/api/archive/restore", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -179,12 +195,20 @@ export function FolderStatusBar({
 
     if (totalFiles === 0) return null;
 
+    const hasSelection = selections.length > 0;
+    const selectedFileCount = hasSelection ? selections.reduce((sum, s) => sum + (s.type === "file" ? 1 : 0), 0) + selections.filter((s) => s.type === "folder").length : 0;
+    const selectedSize = hasSelection ? selections.reduce((sum, s) => sum + s.size, 0) : 0;
+    const displayCount = hasSelection ? selections.length : totalFiles;
+    const displaySize = hasSelection ? formatFileSize(selectedSize) : sizeLabel;
+
     return (
       <div className="flex items-center gap-2">
         <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-1.5">
           <Snowflake className="h-3.5 w-3.5 text-blue-500" />
           <span className="text-xs">
-            {totalFiles} file{totalFiles !== 1 ? "s" : ""} ({sizeLabel})
+            {hasSelection
+              ? `${selections.length} selected (${displaySize})`
+              : `${totalFiles} file${totalFiles !== 1 ? "s" : ""} (${sizeLabel})`}
           </span>
         </div>
         <button
@@ -193,7 +217,7 @@ export function FolderStatusBar({
           className="inline-flex h-7 items-center gap-1.5 rounded-md bg-amber-500/15 px-2.5 text-xs font-medium text-amber-500 hover:bg-amber-500/25 active:scale-[0.97] cursor-pointer disabled:opacity-50 transition-all"
         >
           <Pickaxe className="h-3 w-3" />
-          {restoring ? "..." : "Restore"}
+          {restoring ? "..." : hasSelection ? `Restore ${selections.length} file${selections.length !== 1 ? "s" : ""}` : "Restore folder"}
         </button>
       </div>
     );
@@ -278,16 +302,21 @@ export function FolderStatusBar({
       </div>
 
       {/* Restore confirm modal */}
-      {showRestoreConfirm && (
-        <RestoreConfirmModal
-          fileCount={totalFiles}
-          totalSizeBytes={totalSize}
-          size={sizeLabel}
-          region={region}
-          onConfirm={handleRestore}
-          onCancel={() => setShowRestoreConfirm(false)}
-        />
-      )}
+      {showRestoreConfirm && (() => {
+        const hasSelection = selections.length > 0;
+        const selSize = hasSelection ? selections.reduce((sum, s) => sum + s.size, 0) : totalSize;
+        const selCount = hasSelection ? selections.length : totalFiles;
+        return (
+          <RestoreConfirmModal
+            fileCount={selCount}
+            totalSizeBytes={selSize}
+            size={formatFileSize(selSize)}
+            region={region}
+            onConfirm={handleRestore}
+            onCancel={() => setShowRestoreConfirm(false)}
+          />
+        );
+      })()}
 
       {/* Delete confirm modal */}
       {showDeleteConfirm && selections.length > 0 && (

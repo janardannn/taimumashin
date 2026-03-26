@@ -101,7 +101,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [error, setError] = useState("");
 
-  const [selectedItems, setSelectedItems] = useState<Map<string, { type: "file" | "folder"; name: string }>>(new Map());
+  const [selectedItems, setSelectedItems] = useState<Map<string, { type: "file" | "folder"; name: string; size: number }>>(new Map());
   const lastClickedRef = useRef<string | null>(null);
   const [viewingFile, setViewingFile] = useState<S3File | null>(null);
   const { query: searchQuery, setQuery: setSearchQuery } = useSearch();
@@ -255,29 +255,29 @@ export function FileBrowser({ path }: FileBrowserProps) {
 
   // Flat ordered list of all item keys for shift+click range selection
   const flatItemKeys = useMemo(() => {
-    const keys: { key: string; type: "file" | "folder"; name: string }[] = [];
-    if (!path) keys.push({ key: "instant", type: "folder", name: "Instant" });
+    const keys: { key: string; type: "file" | "folder"; name: string; size: number }[] = [];
+    if (!path) keys.push({ key: "instant", type: "folder", name: "Instant", size: 0 });
     for (const group of dateGroups) {
       for (const item of group.items) {
         if (item.type === "folder") {
           const f = item.data as S3Folder;
-          keys.push({ key: f.prefix, type: "folder", name: f.name });
+          keys.push({ key: f.prefix, type: "folder", name: f.name, size: 0 });
         } else {
           const f = item.data as S3File;
-          keys.push({ key: f.key, type: "file", name: f.name });
+          keys.push({ key: f.key, type: "file", name: f.name, size: f.size });
         }
       }
     }
     return keys;
   }, [path, dateGroups]);
 
-  const handleSelect = useCallback((key: string, type: "file" | "folder", name: string, e: React.MouseEvent) => {
+  const handleSelect = useCallback((key: string, type: "file" | "folder", name: string, size: number, e: React.MouseEvent) => {
     if (e.metaKey || e.ctrlKey) {
       // Toggle individual item
       setSelectedItems(prev => {
         const next = new Map(prev);
         if (next.has(key)) next.delete(key);
-        else next.set(key, { type, name });
+        else next.set(key, { type, name, size });
         return next;
       });
       lastClickedRef.current = key;
@@ -291,14 +291,14 @@ export function FileBrowser({ path }: FileBrowserProps) {
         setSelectedItems(prev => {
           const next = new Map(prev);
           for (let i = start; i <= end; i++) {
-            next.set(flatItemKeys[i].key, { type: flatItemKeys[i].type, name: flatItemKeys[i].name });
+            next.set(flatItemKeys[i].key, { type: flatItemKeys[i].type, name: flatItemKeys[i].name, size: flatItemKeys[i].size });
           }
           return next;
         });
       }
     } else {
       // Single select
-      setSelectedItems(new Map([[key, { type, name }]]));
+      setSelectedItems(new Map([[key, { type, name, size }]]));
       lastClickedRef.current = key;
     }
   }, [flatItemKeys]);
@@ -323,7 +323,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
   const selections = useMemo(() => {
     return Array.from(selectedItems.entries())
       .filter(([key]) => key !== "instant")
-      .map(([key, { type, name }]) => ({ type, name, key }));
+      .map(([key, { type, name, size }]) => ({ type, name, key, size }));
   }, [selectedItems]);
 
   const handleDeleteComplete = useCallback(() => {
@@ -412,7 +412,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
                   variant="instant"
                   pinned
                   selected={selectedItems.has("instant")}
-                  onClick={(e) => handleSelect("instant", "folder", "Instant", e)}
+                  onClick={(e) => handleSelect("instant", "folder", "Instant", 0, e)}
                   onDoubleClick={() => router.push("/instant")}
                 />
               </div>
@@ -434,7 +434,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
                             name={folder.name}
                             path={folder.prefix}
                             selected={selectedItems.has(folder.prefix)}
-                            onClick={(e) => handleSelect(folder.prefix, "folder", folder.name, e)}
+                            onClick={(e) => handleSelect(folder.prefix, "folder", folder.name, 0, e)}
                             onDoubleClick={() => handleFolderDoubleClick(folder.prefix)}
                           />
                         );
@@ -453,7 +453,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
                             storageClass={file.storageClass}
                             previewUrl={file.previewUrl}
                             selected={selectedItems.has(file.key)}
-                            onClick={(e) => handleSelect(file.key, "file", file.name, e)}
+                            onClick={(e) => handleSelect(file.key, "file", file.name, file.size, e)}
                             onDoubleClick={() => handleFileDoubleClick(file)}
                           />
                         );
