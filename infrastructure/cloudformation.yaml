@@ -35,11 +35,11 @@ Parameters:
   LifecycleDays:
     Type: Number
     Default: 7
-    MinValue: 1
+    MinValue: 0
     MaxValue: 365
     Description: >
       Number of days after upload before objects under the originals/ prefix
-      are transitioned to Glacier Deep Archive. Default is 7.
+      are transitioned to Glacier Deep Archive. Set to 0 for immediate transition. Default is 7.
 
 Resources:
   MediaBucket:
