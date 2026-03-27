@@ -6,6 +6,7 @@ import { useSession } from "next-auth/react";
 import { useS3 } from "@/hooks/use-s3";
 import { getFileType, sanitizePath } from "@/lib/file-utils";
 import { canGenerateThumbnail, generateImageThumbnail } from "@/lib/preview-generator";
+import ExifReader from "exifreader";
 
 // --- Types ---
 
@@ -198,6 +199,22 @@ export function OperationProvider({ children }: { children: React.ReactNode }) {
               }
             }
 
+            // Extract EXIF date for images (iCloud Photos overwrites file.lastModified)
+            let originalDate: string | null = file.lastModified ? new Date(file.lastModified).toISOString() : null;
+            if (getFileType(safePath) === "image") {
+              try {
+                const buf = await file.arrayBuffer();
+                const tags = ExifReader.load(buf, { expanded: false });
+                const exifDate = tags["DateTimeOriginal"]?.description;
+                if (exifDate) {
+                  // EXIF format: "YYYY:MM:DD HH:MM:SS" → ISO
+                  const iso = exifDate.replace(/^(\d{4}):(\d{2}):(\d{2})/, "$1-$2-$3");
+                  const parsed = new Date(iso);
+                  if (!isNaN(parsed.getTime())) originalDate = parsed.toISOString();
+                }
+              } catch { /* No EXIF or unreadable — keep file.lastModified */ }
+            }
+
             // Track in DB
             const confirmRes = await fetch("/api/archive/upload/confirm", {
               method: "POST",
@@ -206,7 +223,7 @@ export function OperationProvider({ children }: { children: React.ReactNode }) {
                 key,
                 size: file.size,
                 contentType,
-                originalDate: file.lastModified ? new Date(file.lastModified).toISOString() : null,
+                originalDate,
                 previewSize,
                 hasPreview: previewSize !== null,
               }),

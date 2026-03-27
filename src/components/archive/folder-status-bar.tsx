@@ -59,6 +59,8 @@ export function FolderStatusBar({
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renameName, setRenameName] = useState("");
   const [downloadCooldown, setDownloadCooldown] = useState(false);
   const [showRestoreList, setShowRestoreList] = useState(false);
   const [viewingJob, setViewingJob] = useState<RestoreJob | null>(null);
@@ -305,15 +307,8 @@ export function FolderStatusBar({
                 {selections.length === 1 && (
                   <button
                     onClick={() => {
-                      const name = selections[0].name;
-                      const newName = prompt("Rename to:", name);
-                      if (newName && newName !== name && newName.trim()) {
-                        ops.startMove(
-                          [{ ...selections[0], name: newName.trim() }],
-                          folderPath || "/"
-                        );
-                        onDeleteComplete(); // clears selection
-                      }
+                      setRenameName(selections[0].name);
+                      setShowRenameModal(true);
                     }}
                     title="Rename"
                     className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-orange-500/10 text-orange-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-orange-500/15"
@@ -404,6 +399,59 @@ export function FolderStatusBar({
           }}
           onCancel={() => setShowMoveModal(false)}
         />
+      )}
+
+      {showRenameModal && selections.length === 1 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowRenameModal(false)}>
+          <div className="w-full max-w-sm rounded-lg border border-border bg-background p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Rename</h2>
+              <button onClick={() => setShowRenameModal(false)} className="flex h-7 w-7 items-center justify-center rounded-md bg-muted-foreground/15 text-muted-foreground hover:bg-muted-foreground/30 hover:text-foreground cursor-pointer transition-colors">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const trimmed = renameName.trim();
+              if (trimmed && trimmed !== selections[0].name) {
+                setShowRenameModal(false);
+                ops.startMove(
+                  [{ ...selections[0], name: trimmed }],
+                  folderPath || "/"
+                );
+                onDeleteComplete();
+              }
+            }} className="space-y-4">
+              <input
+                type="text"
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+                autoFocus
+                onFocus={(e) => {
+                  const dot = renameName.lastIndexOf(".");
+                  if (dot > 0) e.target.setSelectionRange(0, dot);
+                }}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              <div className="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowRenameModal(false)}
+                  className="rounded-md px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent cursor-pointer transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!renameName.trim() || renameName.trim() === selections[0].name}
+                  className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 active:scale-[0.98] cursor-pointer disabled:opacity-50 transition-all"
+                >
+                  Rename
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </>
   );
