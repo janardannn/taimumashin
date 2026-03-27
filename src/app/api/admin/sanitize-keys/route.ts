@@ -93,7 +93,7 @@ export async function POST() {
       if (newKey !== file.s3Key) {
         await s3.send(new CopyObjectCommand({
           Bucket: bucket,
-          CopySource: `${bucket}/${file.s3Key}`,
+          CopySource: encodeURI(`${bucket}/${file.s3Key}`),
           Key: newKey,
         }));
         await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: file.s3Key }));
@@ -104,7 +104,7 @@ export async function POST() {
         try {
           await s3.send(new CopyObjectCommand({
             Bucket: bucket,
-            CopySource: `${bucket}/${file.previewKey}`,
+            CopySource: encodeURI(`${bucket}/${file.previewKey}`),
             Key: newPreviewKey,
           }));
           await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: file.previewKey }));
