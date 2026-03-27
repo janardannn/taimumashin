@@ -185,9 +185,9 @@ export function DashboardContent() {
                 </div>
                 <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                   job.status === "READY"
-                    ? "bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-300"
+                    ? "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300"
                     : job.status === "RESTORING"
-                    ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                    ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
                     : "bg-muted text-muted-foreground"
                 }`}>
                   {job.status === "READY" ? "Available" :
@@ -221,9 +221,9 @@ export function DashboardContent() {
             <div className="flex items-center gap-2 mb-4">
               <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
                 viewingJob.status === "READY"
-                  ? "bg-green-50 text-green-700 dark:bg-green-950 dark:text-green-300"
+                  ? "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300"
                   : viewingJob.status === "RESTORING"
-                  ? "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
+                  ? "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
                   : "bg-muted text-muted-foreground"
               }`}>
                 {viewingJob.status === "READY" ? "Available" :
