@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { S3Client, ListObjectsV2Command, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand, RestoreObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, ListObjectsV2Command, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand, RestoreObjectCommand, CopyObjectCommand } from "@aws-sdk/client-s3";
 import { STSClient, AssumeRoleWithWebIdentityCommand } from "@aws-sdk/client-sts";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
@@ -187,6 +187,18 @@ export function useS3({ lazy = false }: { lazy?: boolean } = {}) {
     [getClient]
   );
 
+  const copyObject = useCallback(
+    async (sourceKey: string, destKey: string) => {
+      const { client, bucket } = await getClient();
+      return client.send(new CopyObjectCommand({
+        Bucket: bucket,
+        CopySource: encodeURI(`${bucket}/${sourceKey}`),
+        Key: destKey,
+      }));
+    },
+    [getClient]
+  );
+
   const deleteObject = useCallback(
     async (key: string) => {
       const { client, bucket } = await getClient();
@@ -236,6 +248,7 @@ export function useS3({ lazy = false }: { lazy?: boolean } = {}) {
     putObject,
     getPresignedUrl,
     getPresignedPutUrl,
+    copyObject,
     deleteObject,
     restoreObject,
     ensureCredentials,

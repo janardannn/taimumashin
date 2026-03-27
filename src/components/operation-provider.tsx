@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useCallback, useState, useEffect, useRef } from "react";
-import { Upload, Trash2, Download, ChevronDown, ChevronUp, X, Check, AlertCircle } from "lucide-react";
+import { Upload, Trash2, Download, FolderInput, ChevronDown, ChevronUp, X, Check, AlertCircle } from "lucide-react";
 import { useSession } from "next-auth/react";
 import { useS3 } from "@/hooks/use-s3";
 import { getFileType, sanitizePath } from "@/lib/file-utils";
@@ -39,11 +39,13 @@ export interface DeleteSelection {
 }
 
 export type DownloadSelection = DeleteSelection;
+export type MoveSelection = DeleteSelection;
 
 interface OperationContextValue {
   startUpload: (files: UploadFileInput[], folderPath: string) => void;
   startDelete: (selections: DeleteSelection[]) => void;
   startDownload: (selections: DownloadSelection[]) => void;
+  startMove: (selections: MoveSelection[], destFolderPath: string) => void;
   registerRefresh: (cb: () => void) => void;
   unregisterRefresh: (cb: () => void) => void;
 }
@@ -442,6 +444,186 @@ export function OperationProvider({ children }: { children: React.ReactNode }) {
     [updateOp]
   );
 
+  // --- Move ---
+
+  const startMove = useCallback(
+    (selections: MoveSelection[], destFolderPath: string) => {
+      const opId = crypto.randomUUID();
+      setCollapsed(false);
+
+      (async () => {
+        const s3 = s3Ref.current;
+
+        // Resolve selections into individual files + track folder moves
+        const files: { name: string; oldKey: string; oldPreviewKey?: string; subPath?: string }[] = [];
+        const folderMoveEntries: { oldPath: string; folderName: string }[] = [];
+
+        for (const sel of selections) {
+          if (sel.type === "file") {
+            const previewKey = sel.key.startsWith("originals/")
+              ? sel.key.replace(/^originals\//, "previews/")
+              : undefined;
+            files.push({ name: sel.name, oldKey: sel.key, oldPreviewKey: previewKey });
+          } else {
+            // Track the folder itself for DB folder record update
+            // sel.key is the S3 prefix like "originals/photos/" — extract the DB folder path
+            const dbPath = sel.key.replace(/^(originals|instant)\//, "").replace(/\/$/, "");
+            if (dbPath) folderMoveEntries.push({ oldPath: dbPath, folderName: sel.name });
+
+            const objects = await s3.listAllObjects(sel.key);
+            for (const obj of objects) {
+              const name = obj.Key.split("/").pop()!;
+              // Preserve folder name + subfolder structure: "more tests/photo.jpg"
+              const relPath = `${sel.name}/${obj.Key.slice(sel.key.length)}`;
+              const previewKey = obj.Key.startsWith("originals/")
+                ? obj.Key.replace(/^originals\//, "previews/")
+                : undefined;
+              files.push({ name, oldKey: obj.Key, oldPreviewKey: previewKey, subPath: relPath });
+            }
+          }
+        }
+
+        if (files.length === 0) return;
+
+        const items: OperationItem[] = files.map((f) => ({
+          label: f.name,
+          progress: 0,
+          status: "pending",
+        }));
+
+        const op: Operation = {
+          id: opId,
+          type: "upload", // reuse "upload" type for widget display (shows progress)
+          label: `Moving ${files.length} file${files.length > 1 ? "s" : ""}`,
+          items,
+          status: "running",
+          startedAt: Date.now(),
+        };
+
+        setOperations((prev) => [...prev, op]);
+
+        let successCount = 0;
+        const dbMoves: { oldKey: string; newKey: string; newPreviewKey?: string; newFolderPath: string; newName: string }[] = [];
+
+        for (let i = 0; i < files.length; i++) {
+          const { name, oldKey, oldPreviewKey } = files[i];
+
+          updateOp(opId, (op) => ({
+            ...op,
+            items: op.items.map((item, j) => (j === i ? { ...item, status: "running" } : item)),
+          }));
+
+          try {
+            // Compute new key — preserve subfolder structure for folder moves
+            const prefix = oldKey.startsWith("instant/") ? "instant" : "originals";
+            const isInstant = prefix === "instant";
+            const destSub = isInstant
+              ? destFolderPath.replace(/^instant\/?/, "")
+              : destFolderPath;
+            const relativePath = files[i].subPath || name;
+            const newKey = `${prefix}/${destSub ? destSub + "/" : ""}${relativePath}`;
+
+            // Skip if source === destination
+            if (newKey === oldKey) {
+              updateOp(opId, (op) => ({
+                ...op,
+                items: op.items.map((item, j) => (j === i ? { ...item, status: "done", progress: 100 } : item)),
+              }));
+              successCount++;
+              continue;
+            }
+
+            // Copy original (don't delete yet — wait for DB update)
+            await s3.copyObject(oldKey, newKey);
+
+            // Copy preview if exists
+            let newPreviewKey: string | undefined;
+            if (oldPreviewKey) {
+              newPreviewKey = newKey.replace(/^originals\//, "previews/");
+              try {
+                await s3.copyObject(oldPreviewKey, newPreviewKey);
+              } catch {
+                newPreviewKey = undefined; // preview might not exist
+              }
+            }
+
+            // Compute new folder path for DB
+            // For files inside moved folders, include the subfolder structure
+            const relDir = relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : "";
+            const fullDest = destSub ? (relDir ? `${destSub}/${relDir}` : destSub) : relDir;
+            const newFolderPath = isInstant
+              ? (fullDest ? `instant/${fullDest}` : "instant")
+              : (fullDest || "/");
+
+            dbMoves.push({ oldKey, newKey, newPreviewKey, newFolderPath, newName: name });
+            successCount++;
+
+            updateOp(opId, (op) => ({
+              ...op,
+              items: op.items.map((item, j) => (j === i ? { ...item, status: "done", progress: 100 } : item)),
+            }));
+          } catch (err) {
+            const raw = err instanceof Error ? err.message : "Move failed";
+            const msg = raw.includes("InvalidObjectState") || raw.includes("ObjectNotInActiveTier") ? "File is archived" : raw;
+            updateOp(opId, (op) => ({
+              ...op,
+              items: op.items.map((item, j) => (j === i ? { ...item, status: "error", error: msg } : item)),
+            }));
+          }
+        }
+
+        // Batch update DB — files + folder records, then delete old S3 objects
+        if (dbMoves.length > 0 || folderMoveEntries.length > 0) {
+          const folderMoves = folderMoveEntries.map((fm) => {
+            const destSub = destFolderPath === "/" ? "" : destFolderPath;
+            const newPath = destSub ? `${destSub}/${fm.folderName}` : fm.folderName;
+            return { oldPath: fm.oldPath, newPath };
+          });
+
+          try {
+            const res = await fetch("/api/archive/move", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ moves: dbMoves, folderMoves }),
+            });
+
+            // Only delete old S3 objects after DB update succeeds
+            if (res.ok) {
+              for (const move of dbMoves) {
+                try { await s3.deleteObject(move.oldKey); } catch { /* best effort */ }
+                if (move.newPreviewKey) {
+                  const oldPreviewKey = move.oldKey.replace(/^originals\//, "previews/");
+                  try { await s3.deleteObject(oldPreviewKey); } catch { /* best effort */ }
+                }
+              }
+
+              // Delete empty S3 folder markers only if all files moved successfully
+              if (successCount === files.length) {
+                for (const fm of folderMoveEntries) {
+                  const prefix = `originals/${fm.oldPath}/`;
+                  try { await s3.deleteObject(prefix); } catch { /* marker may not exist */ }
+                  const previewPrefix = `previews/${fm.oldPath}/`;
+                  try { await s3.deleteObject(previewPrefix); } catch { /* best effort */ }
+                }
+              }
+            }
+          } catch {
+            console.error("Failed to update DB after move");
+          }
+        }
+
+        const failCount = files.length - successCount;
+        const finalStatus: OperationStatus = successCount === 0 ? "error" : failCount > 0 ? "error" : "done";
+        updateOp(opId, (op) => ({ ...op, status: finalStatus }));
+
+        if (successCount > 0) {
+          notifyRefresh();
+        }
+      })();
+    },
+    [updateOp, notifyRefresh]
+  );
+
   const dismissCompleted = useCallback(() => {
     setOperations((prev) => prev.filter((op) => op.status === "running"));
   }, []);
@@ -449,7 +631,7 @@ export function OperationProvider({ children }: { children: React.ReactNode }) {
   const hasOperations = operations.length > 0;
   const allDone = hasOperations && operations.every((op) => op.status !== "running");
   return (
-    <OperationContext.Provider value={{ startUpload, startDelete, startDownload, registerRefresh, unregisterRefresh }}>
+    <OperationContext.Provider value={{ startUpload, startDelete, startDownload, startMove, registerRefresh, unregisterRefresh }}>
       {children}
       {hasOperations && (
         <OperationWidget

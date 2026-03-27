@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download, FolderPlus, Upload, FolderInput, ChevronDown } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download, FolderPlus, Upload, FolderInput, ChevronDown, ChevronUp, Home, Pencil } from "lucide-react";
 import { formatFileSize } from "@/lib/file-utils";
 import { useS3 } from "@/hooks/use-s3";
 import { useOperations, type DeleteSelection } from "@/components/operation-provider";
@@ -57,6 +57,7 @@ export function FolderStatusBar({
   const [restoring, setRestoring] = useState(false);
   const [error, setError] = useState("");
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
+  const [showMoveModal, setShowMoveModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [downloadCooldown, setDownloadCooldown] = useState(false);
   const [showRestoreList, setShowRestoreList] = useState(false);
@@ -282,24 +283,44 @@ export function FolderStatusBar({
               <div className="flex items-center gap-1">
                 <button
                   onClick={() => setShowDeleteConfirm(true)}
-                  className="inline-flex items-center gap-1.5 h-7 rounded-md bg-red-500/10 px-2.5 text-xs font-medium text-red-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-red-500/15"
+                  title="Delete"
+                  className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-red-500/10 text-red-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-red-500/15"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
-                  Delete
                 </button>
                 <button
                   onClick={handleDownloadSelected}
-                  className="inline-flex items-center gap-1.5 h-7 rounded-md bg-emerald-500/10 px-2.5 text-xs font-medium text-emerald-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-emerald-500/15"
+                  title="Download"
+                  className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-emerald-500/10 text-emerald-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-emerald-500/15"
                 >
                   <Download className="h-3.5 w-3.5" />
-                  Download
                 </button>
                 <button
-                  className="inline-flex items-center gap-1.5 h-7 rounded-md bg-blue-500/10 px-2.5 text-xs font-medium text-blue-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-blue-500/15"
+                  onClick={() => setShowMoveModal(true)}
+                  title="Move"
+                  className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-blue-500/10 text-blue-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-blue-500/15"
                 >
                   <FolderInput className="h-3.5 w-3.5" />
-                  Move
                 </button>
+                {selections.length === 1 && (
+                  <button
+                    onClick={() => {
+                      const name = selections[0].name;
+                      const newName = prompt("Rename to:", name);
+                      if (newName && newName !== name && newName.trim()) {
+                        ops.startMove(
+                          [{ ...selections[0], name: newName.trim() }],
+                          folderPath || "/"
+                        );
+                        onDeleteComplete(); // clears selection
+                      }
+                    }}
+                    title="Rename"
+                    className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-orange-500/10 text-orange-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-orange-500/15"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
               <div className="h-4 w-px bg-border" />
             </>
@@ -369,6 +390,19 @@ export function FolderStatusBar({
         <RestoreJobDetailModal
           job={viewingJob}
           onClose={() => setViewingJob(null)}
+        />
+      )}
+
+      {showMoveModal && selections.length > 0 && (
+        <MoveModal
+          selections={selections}
+          currentPath={folderPath}
+          onMove={(dest) => {
+            setShowMoveModal(false);
+            ops.startMove(selections, dest);
+            onDeleteComplete(); // clears selection
+          }}
+          onCancel={() => setShowMoveModal(false)}
         />
       )}
     </>
@@ -575,6 +609,130 @@ function DeleteConfirmModal({
             <span className="flex items-center justify-center gap-1.5">
               <Trash2 className="h-3.5 w-3.5" />
               Delete{!isSingle ? ` (${count})` : ""}
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MoveModal({
+  selections,
+  currentPath,
+  onMove,
+  onCancel,
+}: {
+  selections: Selection[];
+  currentPath: string;
+  onMove: (destFolderPath: string) => void;
+  onCancel: () => void;
+}) {
+  const [browsePath, setBrowsePath] = useState("/");
+  const [folders, setFolders] = useState<{ name: string; path: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/api/archive/browse?path=${encodeURIComponent(browsePath === "/" ? "" : browsePath)}`)
+      .then((r) => r.json())
+      .then((data) => {
+        setFolders(
+          (data.folders || []).map((f: { name: string; path: string }) => ({
+            name: f.name,
+            path: f.path,
+          }))
+        );
+      })
+      .catch(() => setFolders([]))
+      .finally(() => setLoading(false));
+  }, [browsePath]);
+
+  const isCurrentPath = browsePath === (currentPath || "/");
+  const parentPath = browsePath === "/"
+    ? null
+    : browsePath.includes("/")
+      ? browsePath.split("/").slice(0, -1).join("/") || "/"
+      : "/";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onCancel}>
+      <div className="w-full max-w-md rounded-xl border border-border bg-background p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-base font-semibold">Move {selections.length} item{selections.length !== 1 ? "s" : ""}</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">Select destination folder</p>
+          </div>
+          <button onClick={onCancel} className="flex h-7 w-7 items-center justify-center rounded-md bg-muted-foreground/15 text-muted-foreground hover:bg-muted-foreground/30 hover:text-foreground cursor-pointer transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Current browse path */}
+        <div className="flex items-center gap-1.5 mb-3 px-2 py-1.5 rounded-md bg-muted/50 text-xs text-muted-foreground">
+          <Folder className="h-3 w-3 shrink-0" />
+          <span className="truncate">{browsePath === "/" ? "/ (root)" : browsePath}</span>
+        </div>
+
+        {/* Navigation */}
+        <div className="rounded-lg border max-h-56 overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20">
+          {/* Navigation row */}
+          {(parentPath !== null || browsePath !== "/") && (
+            <div className="flex items-center border-b border-border/50">
+              {parentPath !== null && (
+                <button
+                  onClick={() => setBrowsePath(parentPath)}
+                  className="flex items-center justify-center h-9 w-9 hover:bg-accent cursor-pointer transition-colors"
+                  title="Up one level"
+                >
+                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                </button>
+              )}
+              {browsePath !== "/" && (
+                <button
+                  onClick={() => setBrowsePath("/")}
+                  className="flex items-center justify-center h-9 w-9 hover:bg-accent cursor-pointer transition-colors"
+                  title="Go to root"
+                >
+                  <Home className="h-3.5 w-3.5 text-muted-foreground" />
+                </button>
+              )}
+            </div>
+          )}
+
+          {loading ? (
+            <div className="px-3 py-4 text-center text-xs text-muted-foreground">Loading...</div>
+          ) : folders.length === 0 ? (
+            <div className="px-3 py-4 text-center text-xs text-muted-foreground">No subfolders</div>
+          ) : (
+            folders.map((f) => (
+              <button
+                key={f.path}
+                onClick={() => setBrowsePath(f.path)}
+                className="flex items-center gap-2 w-full px-3 py-2.5 text-xs hover:bg-accent cursor-pointer transition-colors"
+              >
+                <Folder className="h-3.5 w-3.5 text-blue-500" />
+                <span>{f.name}</span>
+              </button>
+            ))
+          )}
+        </div>
+
+        <div className="flex gap-2 mt-4">
+          <button
+            onClick={onCancel}
+            className="flex-1 rounded-md border py-2 text-sm font-medium hover:bg-accent active:scale-[0.98] cursor-pointer transition-all"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onMove(browsePath)}
+            disabled={isCurrentPath}
+            className="flex-1 rounded-md bg-blue-500 py-2 text-sm font-medium text-white hover:bg-blue-600 active:scale-[0.98] cursor-pointer disabled:opacity-50 transition-all"
+          >
+            <span className="flex items-center justify-center gap-1.5">
+              <FolderInput className="h-3.5 w-3.5" />
+              Move here
             </span>
           </button>
         </div>
