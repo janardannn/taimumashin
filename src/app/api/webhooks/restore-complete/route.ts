@@ -40,11 +40,12 @@ export async function POST(req: Request) {
         where: { userId, folderPath, status: "READY", restoredAt: { not: null } },
         orderBy: { restoredAt: "desc" },
         take: 1,
-        select: { fileCount: true },
+        select: { fileCount: true, keys: true },
       });
       const fileCount = jobs[0]?.fileCount || 1;
+      const keys = Array.isArray(jobs[0]?.keys) ? jobs[0].keys as string[] : [];
       try {
-        await sendRestoreEmail(to, folderPath, fileCount, expiresAt);
+        await sendRestoreEmail(to, folderPath, fileCount, keys, expiresAt);
       } catch (err) {
         console.error("Failed to send restore email:", err);
       }

@@ -45,12 +45,13 @@ export async function PATCH(req: Request) {
     });
     const job = await prisma.restoreJob.findUnique({
       where: { id: jobId },
-      select: { folderPath: true, fileCount: true },
+      select: { folderPath: true, fileCount: true, keys: true },
     });
     const to = user?.notificationEmail || user?.email;
     if (to && job) {
+      const keys = Array.isArray(job.keys) ? job.keys as string[] : [];
       try {
-        await sendRestoreEmail(to, job.folderPath, job.fileCount);
+        await sendRestoreEmail(to, job.folderPath, job.fileCount, keys);
       } catch (err) {
         console.error("Failed to send restore email:", err);
       }
