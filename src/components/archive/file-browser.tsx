@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { Upload, RefreshCw } from "lucide-react";
+import { Upload, RefreshCw, Pin, PinOff } from "lucide-react";
 import { FolderCard } from "./folder-card";
 import { FileCard } from "./file-card";
 import { FileViewer } from "./file-viewer";
@@ -101,6 +101,11 @@ export function FileBrowser({ path }: FileBrowserProps) {
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [error, setError] = useState("");
 
+  const [previewVersion, setPreviewVersion] = useState(0);
+  const [headerPinned, setHeaderPinned] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("tm-header-pinned") === "true";
+  });
   const [selectedItems, setSelectedItems] = useState<Map<string, { type: "file" | "folder"; name: string; size: number }>>(new Map());
   const lastClickedRef = useRef<string | null>(null);
   const [viewingFile, setViewingFile] = useState<S3File | null>(null);
@@ -138,6 +143,8 @@ export function FileBrowser({ path }: FileBrowserProps) {
         previewKey: f.previewKey,
       }));
 
+      previewLoadedRef.current.clear();
+      setPreviewVersion((v) => v + 1);
       setFolders(folderResults);
       setFiles(fileResults);
       setStats(data.stats);
@@ -233,7 +240,7 @@ export function FileBrowser({ path }: FileBrowserProps) {
     loadPreviews();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- run when s3 ready or files change
-  }, [s3.ready, files.length, isInstantPath]);
+  }, [s3.ready, files.length, isInstantPath, previewVersion]);
 
   // Reset preview cache and search when path changes
   useEffect(() => {
@@ -344,16 +351,29 @@ export function FileBrowser({ path }: FileBrowserProps) {
       )}
 
       {/* Breadcrumb + Status bar header */}
-      <div className="rounded-xl border border-[var(--panel-border)] bg-[var(--panel-bg)] overflow-hidden" onClick={(e) => e.stopPropagation()}>
+      <div className={`rounded-xl border border-[var(--panel-border)] bg-[var(--panel-bg)] overflow-hidden ${headerPinned ? "sticky top-[3.75rem] z-30 mt-1 backdrop-blur-xl" : ""}`} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-4 py-2">
           <BreadcrumbNav path={path} />
-          <button
-            onClick={loadContents}
-            className="inline-flex h-6 items-center justify-center rounded px-1.5 text-muted-foreground hover:bg-[var(--glass-hover)] hover:text-foreground transition-colors"
-            title="Refresh"
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-          </button>
+          <div className="flex items-center gap-0.5">
+            <button
+              onClick={() => {
+                const next = !headerPinned;
+                setHeaderPinned(next);
+                localStorage.setItem("tm-header-pinned", String(next));
+              }}
+              className={`inline-flex h-6 items-center justify-center rounded px-1.5 transition-colors ${headerPinned ? "text-foreground bg-accent/50" : "text-muted-foreground hover:bg-[var(--glass-hover)] hover:text-foreground"}`}
+              title={headerPinned ? "Unpin header" : "Pin header"}
+            >
+              {headerPinned ? <Pin className="h-3.5 w-3.5" /> : <PinOff className="h-3.5 w-3.5" />}
+            </button>
+            <button
+              onClick={loadContents}
+              className="inline-flex h-6 items-center justify-center rounded px-1.5 text-muted-foreground hover:bg-[var(--glass-hover)] hover:text-foreground transition-colors"
+              title="Refresh"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
         {!loading && (folders.length > 0 || files.length > 0) && (
           <div onClick={(e) => e.stopPropagation()}>

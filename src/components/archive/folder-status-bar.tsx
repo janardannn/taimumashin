@@ -271,7 +271,7 @@ export function FolderStatusBar({
         </div>
       )}
 
-      <div className="flex items-center justify-between px-4 py-2 border-t border-[var(--panel-border)]">
+      <div className="flex items-center justify-between px-4 py-2 shadow-[inset_0_1px_0_var(--panel-border)]">
         {/* Left: archive status */}
         <ArchiveChip />
 
