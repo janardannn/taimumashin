@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useCallback, useState } from "react";
-import { X, Download, FileText, File as FileIcon, Image as ImageIcon, Film, Music, Archive, Snowflake, Sun } from "lucide-react";
+import { X, Download, FileText, File as FileIcon, Image as ImageIcon, Film, Music } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import { formatFileSize, getFileType, getFileExtension, formatDate } from "@/lib/file-utils";
 import { useS3 } from "@/hooks/use-s3";
 
@@ -22,6 +23,7 @@ type ViewSource = "original" | "preview" | null;
 export function FileViewer({ file, onClose }: FileViewerProps) {
   const [viewUrl, setViewUrl] = useState<string | null>(null);
   const [source, setSource] = useState<ViewSource>(null);
+  const [actualStorageClass, setActualStorageClass] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const s3 = useS3();
 
@@ -39,42 +41,50 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
           if (!cancelled) {
             setViewUrl(url);
             setSource("original");
+            setActualStorageClass("STANDARD");
             setLoading(false);
           }
           return;
         }
 
-        // originals/ files — check storage class & restore status
-        const head = await s3.headObject(file.key);
-        const storageClass = head.StorageClass ?? "STANDARD";
-        const isArchived = storageClass === "DEEP_ARCHIVE" || storageClass === "GLACIER";
-        const isRestored = head.Restore
-          ? head.Restore.includes('ongoing-request="false"')
-          : false;
+        // Probe the original with a 1-byte ranged GET.
+        // If S3 returns 200/206 the file is accessible (Standard or restored Glacier).
+        // If 403 the file is in Glacier and not restored.
+        const url = await s3.getPresignedUrl(file.key);
+        let accessible = false;
+        try {
+          const probe = await fetch(url, { headers: { Range: "bytes=0-0" } });
+          accessible = probe.status === 200 || probe.status === 206;
+        } catch {
+          // Network/CORS error — assume inaccessible
+        }
 
-        if (!isArchived || isRestored) {
-          // Object is available — serve the original
-          const url = await s3.getPresignedUrl(file.key);
+        if (accessible) {
           if (!cancelled) {
             setViewUrl(url);
             setSource("original");
+            setActualStorageClass("STANDARD");
             setLoading(false);
           }
           return;
         }
 
-        // Archived and not yet restored — try the preview copy
+        // File is in Glacier — try the preview copy
+        if (!cancelled) setActualStorageClass("GLACIER");
         const previewKey = file.key.replace(/^originals\//, "previews/");
         try {
-          const url = await s3.getPresignedUrl(previewKey);
-          if (!cancelled) {
-            setViewUrl(url);
-            setSource("preview");
-            setLoading(false);
+          const previewUrl = await s3.getPresignedUrl(previewKey);
+          const previewProbe = await fetch(previewUrl, { headers: { Range: "bytes=0-0" } });
+          if (previewProbe.status === 200 || previewProbe.status === 206) {
+            if (!cancelled) {
+              setViewUrl(previewUrl);
+              setSource("preview");
+              setLoading(false);
+            }
+            return;
           }
-          return;
         } catch {
-          // No preview available either
+          // No preview available
         }
 
         if (!cancelled) {
@@ -84,7 +94,6 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
         }
       } catch {
         if (!cancelled) {
-          // Last-resort fallback: use a previewUrl if the caller provided one
           if (file.previewUrl) {
             setViewUrl(file.previewUrl);
             setSource("preview");
@@ -115,8 +124,10 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
   const fileType = getFileType(file.name);
   const ext = file.name.split(".").pop()?.toLowerCase() || "";
 
-  const isViewable = ["image", "video", "audio"].includes(fileType) ||
-    ["txt", "csv", "json", "md", "log", "xml", "html", "css", "js", "ts", "py", "sh"].includes(ext);
+  const isMd = ext === "md";
+  const isText = ["txt", "csv", "json", "log", "xml", "html", "css", "js", "ts", "py", "sh", "yaml", "yml", "toml", "ini", "env", "gitignore"].includes(ext);
+  const isPdf = ext === "pdf";
+  const isViewable = ["image", "video", "audio"].includes(fileType) || isText || isMd || isPdf;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80" onClick={onClose}>
@@ -127,37 +138,39 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
         {/* Header */}
         <div className="flex items-center justify-between border-b border-[var(--panel-border)] px-4 py-3">
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <p className="text-sm font-medium truncate">{file.name}</p>
-              {!loading && source && (
-                <span className={`shrink-0 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+            <p className="text-sm font-medium truncate">{file.name}</p>
+            <div className="flex items-center gap-2 mt-0.5">
+              <p className="text-xs text-muted-foreground">
+                {formatFileSize(file.size)}
+                {file.lastModified && ` · ${formatDate(file.lastModified)}`}
+                {actualStorageClass && ` · ${humanStorageClass(actualStorageClass)}`}
+              </p>
+              {!loading && (
+                <span className={`shrink-0 inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
                   source === "original"
                     ? "bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300"
-                    : "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                    : source === "preview"
+                      ? "bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300"
+                      : "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"
                 }`}>
-                  {source === "original" ? "Original" : "Preview"}
+                  {source === "original" ? "Original" : source === "preview" ? "Preview" : "Archived"}
                 </span>
               )}
             </div>
-            <p className="text-xs text-muted-foreground">
-              {formatFileSize(file.size)}
-              {file.lastModified && ` · ${formatDate(file.lastModified)}`}
-              {file.storageClass && ` · ${humanStorageClass(file.storageClass)}`}
-            </p>
           </div>
           <div className="flex items-center gap-2 ml-4">
             {viewUrl && source === "original" && (
               <a
                 href={viewUrl}
                 download={file.name}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[var(--glass-border)] bg-[var(--glass-bg)] px-3 text-xs hover:bg-[var(--glass-hover)] transition-colors"
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--glass-border)] bg-[var(--glass-bg)] px-3 text-xs hover:bg-[var(--glass-hover)] active:scale-[0.97] cursor-pointer transition-all"
               >
                 <Download className="h-3.5 w-3.5" />
                 Download
               </a>
             )}
-            <button onClick={onClose} className="text-muted-foreground hover:text-foreground transition-colors">
-              <X className="h-5 w-5" />
+            <button onClick={onClose} className="flex h-7 w-7 items-center justify-center rounded-md bg-muted-foreground/15 text-muted-foreground hover:bg-muted-foreground/30 hover:text-foreground cursor-pointer transition-colors">
+              <X className="h-4 w-4" />
             </button>
           </div>
         </div>
@@ -190,7 +203,15 @@ export function FileViewer({ file, onClose }: FileViewerProps) {
               </div>
               <audio src={viewUrl} controls className="w-full max-w-md" />
             </div>
-          ) : viewUrl && isViewable ? (
+          ) : viewUrl && isPdf ? (
+            <iframe
+              src={viewUrl}
+              title={file.name}
+              className="mx-auto h-[70vh] w-full rounded-md"
+            />
+          ) : viewUrl && isMd ? (
+            <MarkdownViewer url={viewUrl} />
+          ) : viewUrl && isText ? (
             <TextViewer url={viewUrl} />
           ) : (
             <FileDetailsView file={file} />
@@ -237,6 +258,45 @@ function TextViewer({ url }: { url: string }) {
     <pre className="max-h-[70vh] overflow-auto rounded-md bg-muted p-4 text-xs leading-relaxed">
       {content}
     </pre>
+  );
+}
+
+function MarkdownViewer({ url }: { url: string }) {
+  const [content, setContent] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    fetch(url)
+      .then((r) => {
+        if (!r.ok) throw new Error();
+        return r.text();
+      })
+      .then(setContent)
+      .catch(() => setError(true));
+  }, [url]);
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <div className="rounded-md bg-red-100 px-4 py-3 text-sm font-medium text-red-700 dark:bg-red-950 dark:text-red-300">
+          Could not load file content.
+        </div>
+      </div>
+    );
+  }
+
+  if (content === null) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <p className="text-sm text-muted-foreground">Loading...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="prose prose-sm dark:prose-invert max-w-none max-h-[70vh] overflow-auto rounded-md bg-muted/50 p-6">
+      <ReactMarkdown>{content}</ReactMarkdown>
+    </div>
   );
 }
 

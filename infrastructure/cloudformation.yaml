@@ -1,14 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   taimumashin — One-click deployment of user-side storage infrastructure.
-  Creates an S3 bucket with Glacier Deep Archive lifecycle, a Lambda function
-  for preview generation and restore notifications, an IAM OIDC provider and
-  role for browser-based S3 access, and SES email identity. Deploy this stack,
-  then paste the RoleArn and BucketName outputs into your taimumashin dashboard.
+  Creates an S3 bucket with Glacier lifecycle, a Lambda for restore
+  notifications, an IAM OIDC provider and role for browser-based S3 access.
 
-# =============================================================================
-# Parameters — collected from the user at deploy time
-# =============================================================================
 Parameters:
   TaimumashinIssuerUrl:
     Type: String
@@ -24,71 +19,19 @@ Parameters:
     AllowedPattern: "^https?://.+"
     ConstraintDescription: Must be an HTTP or HTTPS URL.
     Description: >
-      Your taimumashin instance URL for webhook callbacks (e.g.
-      https://app.taimumashin.com/api/webhooks/restore-complete). The Lambda
-      function POSTs restore-complete notifications here.
-
-  NotificationEmail:
-    Type: String
-    AllowedPattern: "^[a-zA-Z0-9._%+\\-]+@[a-zA-Z0-9.\\-]+\\.[a-zA-Z]{2,}$"
-    ConstraintDescription: Must be a valid email address.
-    Description: >
-      Email address for restore-complete alerts. An SES verification email
-      will be sent to this address after deployment — you must confirm it
-      before notifications can be delivered.
+      Your taimumashin instance URL for webhook callbacks.
+      The Lambda function POSTs restore-complete notifications here.
 
   LifecycleDays:
     Type: Number
     Default: 7
-    MinValue: 1
+    MinValue: 0
     MaxValue: 365
     Description: >
       Number of days after upload before objects under the originals/ prefix
-      are transitioned to Glacier Deep Archive. Default is 7.
+      are transitioned to Glacier Deep Archive. Set to 0 for immediate transition. Default is 7.
 
-  PreviewQuality:
-    Type: String
-    Default: "720p"
-    AllowedValues:
-      - "720p"
-      - "480p"
-      - "360p"
-    Description: >
-      Resolution for generated video previews. 720p is recommended for
-      a good balance of quality and file size.
-
-  PreviewDurationCap:
-    Type: Number
-    Default: 60
-    MinValue: 10
-    MaxValue: 300
-    Description: >
-      Maximum duration in seconds for generated video previews. The Lambda
-      samples evenly across the full video and caps the output at this length.
-
-# =============================================================================
-# Mappings — resolution presets
-# =============================================================================
-Mappings:
-  ResolutionMap:
-    "720p":
-      Width: "1280"
-      Height: "720"
-    "480p":
-      Width: "854"
-      Height: "480"
-    "360p":
-      Width: "640"
-      Height: "360"
-
-# =============================================================================
-# Resources
-# =============================================================================
 Resources:
-
-  # ---------------------------------------------------------------------------
-  # S3 Bucket — user media storage with Glacier lifecycle
-  # ---------------------------------------------------------------------------
   MediaBucket:
     Type: AWS::S3::Bucket
     DependsOn: LambdaInvokePermission
@@ -115,7 +58,7 @@ Resources:
       CorsConfiguration:
         CorsRules:
           - AllowedOrigins:
-              - "*"
+              - !Ref TaimumashinIssuerUrl
             AllowedMethods:
               - PUT
               - GET
@@ -131,24 +74,12 @@ Resources:
               - x-amz-restore
       NotificationConfiguration:
         LambdaConfigurations:
-          - Event: "s3:ObjectCreated:*"
-            Filter:
-              S3Key:
-                Rules:
-                  - Name: prefix
-                    Value: "originals/"
-            Function: !GetAtt PreviewLambda.Arn
           - Event: "s3:ObjectRestore:Completed"
-            Function: !GetAtt PreviewLambda.Arn
+            Function: !GetAtt RestoreNotifyLambda.Arn
       Tags:
         - Key: Project
           Value: taimumashin
-        - Key: ManagedBy
-          Value: CloudFormation
 
-  # ---------------------------------------------------------------------------
-  # Lambda Execution Role — permissions for the preview generator
-  # ---------------------------------------------------------------------------
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -161,90 +92,51 @@ Resources:
               Service: lambda.amazonaws.com
             Action: "sts:AssumeRole"
       Policies:
-        - PolicyName: LambdaS3Access
+        - PolicyName: LambdaAccess
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # S3 read/write — wildcard to avoid circular dependency
               - Effect: Allow
                 Action:
                   - "s3:GetObject"
-                  - "s3:PutObject"
                   - "s3:HeadObject"
-                  - "s3:DeleteObject"
-                  - "s3:ListBucket"
                 Resource: "arn:aws:s3:::*"
-              # SES email sending
-              - Effect: Allow
-                Action:
-                  - "ses:SendEmail"
-                  - "ses:SendRawEmail"
-                Resource: "*"
-                Condition:
-                  StringEquals:
-                    "ses:FromAddress": !Ref NotificationEmail
-              # CloudWatch Logs
               - Effect: Allow
                 Action:
                   - "logs:CreateLogGroup"
                   - "logs:CreateLogStream"
                   - "logs:PutLogEvents"
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
-      Tags:
-        - Key: Project
-          Value: taimumashin
 
-  # ---------------------------------------------------------------------------
-  # Lambda Function — preview generation + restore notifications
-  # Downloads a static ffmpeg binary at cold start (no external layer needed)
-  # ---------------------------------------------------------------------------
-  PreviewLambda:
+  RestoreNotifyLambda:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub "taimumashin-preview-${AWS::StackName}"
+      FunctionName: !Sub "taimumashin-notify-${AWS::StackName}"
       Description: >
-        Generates video previews and image thumbnails on S3 upload, and sends
-        restore-complete notifications via webhook + SES.
+        POSTs restore-complete webhook when S3 Glacier restores finish.
+        Email notifications are handled by the app server.
       Runtime: python3.12
       Handler: index.handler
       Role: !GetAtt LambdaExecutionRole.Arn
-      MemorySize: 1024
-      Timeout: 900
-      EphemeralStorage:
-        Size: 2048
+      MemorySize: 256
+      Timeout: 60
       Environment:
         Variables:
           WEBHOOK_URL: !Ref WebhookUrl
-          NOTIFICATION_EMAIL: !Ref NotificationEmail
-          PREVIEW_WIDTH: !FindInMap [ResolutionMap, !Ref PreviewQuality, Width]
-          PREVIEW_HEIGHT: !FindInMap [ResolutionMap, !Ref PreviewQuality, Height]
-          PREVIEW_QUALITY: !Ref PreviewQuality
-          PREVIEW_DURATION_CAP: !Ref PreviewDurationCap
-      Tags:
-        - Key: Project
-          Value: taimumashin
       Code:
         ZipFile: |
           """
-          taimumashin preview generator & restore notifier.
+          taimumashin restore notifier.
 
-          Handles two S3 event types:
-            1. s3:ObjectCreated:* on originals/ — generates preview media
-            2. s3:ObjectRestore:Completed — notifies webhook + sends email
-
-          ffmpeg is downloaded as a static binary at cold start and cached in /tmp.
+          Handles s3:ObjectRestore:Completed events — POSTs to the app
+          webhook so the server can update the DB and send email.
           """
 
           import json
           import os
-          import subprocess
-          import tempfile
           import urllib.request
           import urllib.parse
-          import tarfile
-          import math
           import logging
-          import stat
           from pathlib import Path
 
           import boto3
@@ -253,63 +145,11 @@ Resources:
           logger.setLevel(logging.INFO)
 
           s3 = boto3.client("s3")
-          ses = boto3.client("ses")
 
-          # Environment
           WEBHOOK_URL = os.environ["WEBHOOK_URL"]
-          NOTIFICATION_EMAIL = os.environ["NOTIFICATION_EMAIL"]
-          PREVIEW_WIDTH = int(os.environ.get("PREVIEW_WIDTH", "1280"))
-          PREVIEW_HEIGHT = int(os.environ.get("PREVIEW_HEIGHT", "720"))
-          PREVIEW_DURATION_CAP = int(os.environ.get("PREVIEW_DURATION_CAP", "60"))
-
-          # ffmpeg paths — downloaded to /tmp at cold start
-          FFMPEG = "/tmp/ffmpeg"
-          FFPROBE = "/tmp/ffprobe"
-
-          # Static ffmpeg build (John Van Sickle — stable URL, linux amd64)
-          FFMPEG_URL = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
-
-
-          def ensure_ffmpeg():
-              """Download static ffmpeg to /tmp if not already cached."""
-              if os.path.isfile(FFMPEG) and os.path.isfile(FFPROBE):
-                  return True
-              try:
-                  logger.info("Downloading static ffmpeg from %s", FFMPEG_URL)
-                  archive_path = "/tmp/ffmpeg.tar.xz"
-                  urllib.request.urlretrieve(FFMPEG_URL, archive_path)
-                  with tarfile.open(archive_path, "r:xz") as tar:
-                      for member in tar.getmembers():
-                          name = os.path.basename(member.name)
-                          if name in ("ffmpeg", "ffprobe"):
-                              member.name = name
-                              tar.extract(member, "/tmp")
-                  os.chmod(FFMPEG, os.stat(FFMPEG).st_mode | stat.S_IEXEC)
-                  os.chmod(FFPROBE, os.stat(FFPROBE).st_mode | stat.S_IEXEC)
-                  os.remove(archive_path)
-                  logger.info("ffmpeg installed to /tmp")
-                  return True
-              except Exception as exc:
-                  logger.error("Failed to download ffmpeg: %s", exc)
-                  return False
-
-
-          # Warm up on cold start
-          HAS_FFMPEG = ensure_ffmpeg()
-
-          # File extension categories
-          VIDEO_EXTENSIONS = {
-              ".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm",
-              ".m4v", ".mpg", ".mpeg", ".3gp", ".mts", ".m2ts",
-          }
-          IMAGE_EXTENSIONS = {
-              ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp",
-              ".heic", ".heif", ".gif",
-          }
 
 
           def handler(event, context):
-              """Route S3 events to the appropriate handler."""
               for record in event.get("Records", []):
                   event_name = record.get("eventName", "")
                   bucket = record["s3"]["bucket"]["name"]
@@ -318,152 +158,12 @@ Resources:
                   logger.info("Event: %s | Bucket: %s | Key: %s", event_name, bucket, key)
 
                   if "ObjectRestore:Completed" in event_name:
-                      handle_restore_complete(bucket, key, record)
-                  elif "ObjectCreated" in event_name:
-                      if key.startswith("originals/"):
-                          handle_object_created(bucket, key)
-                      else:
-                          logger.info("Skipping non-originals key: %s", key)
+                      handle_restore_complete(bucket, key)
                   else:
                       logger.warning("Unhandled event type: %s", event_name)
 
 
-          # =====================================================================
-          # Object Created — generate preview
-          # =====================================================================
-
-          def handle_object_created(bucket, key):
-              """Download the original file, generate a preview, upload it."""
-              if not HAS_FFMPEG:
-                  logger.error("ffmpeg not available — cannot generate preview for %s", key)
-                  return
-
-              ext = Path(key).suffix.lower()
-
-              if ext in VIDEO_EXTENSIONS:
-                  generate_video_preview(bucket, key)
-              elif ext in IMAGE_EXTENSIONS:
-                  logger.info("Skipping image %s — thumbnails generated client-side.", key)
-              else:
-                  logger.info("Unsupported file type %s — skipping preview generation.", ext)
-
-
-          def generate_video_preview(bucket, key):
-              """Generate a preview video sampled evenly across the source."""
-              with tempfile.TemporaryDirectory(dir="/tmp") as tmpdir:
-                  input_path = os.path.join(tmpdir, "input" + Path(key).suffix)
-                  output_path = os.path.join(tmpdir, "preview.webm")
-
-                  logger.info("Downloading s3://%s/%s", bucket, key)
-                  s3.download_file(bucket, key, input_path)
-
-                  duration = probe_duration(input_path)
-                  if duration is None or duration <= 0:
-                      logger.error("Could not determine duration for %s", key)
-                      return
-
-                  logger.info("Source duration: %.2fs", duration)
-
-                  target_duration = min(duration * 0.10, PREVIEW_DURATION_CAP)
-                  if target_duration < 1:
-                      target_duration = min(duration, PREVIEW_DURATION_CAP)
-
-                  segment_length = 5.0
-                  num_segments = max(1, int(math.ceil(target_duration / segment_length)))
-                  segment_length = target_duration / num_segments
-
-                  if num_segments == 1:
-                      start_points = [0.0]
-                  else:
-                      spacing = duration / num_segments
-                      start_points = [i * spacing for i in range(num_segments)]
-
-                  start_points = [
-                      sp for sp in start_points
-                      if sp + segment_length <= duration + 0.5
-                  ]
-                  if not start_points:
-                      start_points = [0.0]
-
-                  logger.info(
-                      "Preview plan: %d segments x %.1fs = %.1fs total",
-                      len(start_points), segment_length,
-                      len(start_points) * segment_length,
-                  )
-
-                  select_expr = "+".join(
-                      f"between(t\\,{sp:.2f}\\,{sp + segment_length:.2f})"
-                      for sp in start_points
-                  )
-                  scale_filter = (
-                      f"scale={PREVIEW_WIDTH}:{PREVIEW_HEIGHT}"
-                      f":force_original_aspect_ratio=decrease,"
-                      f"pad={PREVIEW_WIDTH}:{PREVIEW_HEIGHT}:(ow-iw)/2:(oh-ih)/2"
-                  )
-
-                  cmd = [
-                      FFMPEG, "-y",
-                      "-i", input_path,
-                      "-vf", f"select='{select_expr}',setpts=N/FRAME_RATE/TB,{scale_filter}",
-                      "-af", f"aselect='{select_expr}',asetpts=N/SR/TB",
-                      "-c:v", "libvpx-vp9", "-b:v", "1M",
-                      "-c:a", "libopus", "-b:a", "128k",
-                      "-t", str(target_duration + 1),
-                      "-threads", "2",
-                      output_path,
-                  ]
-
-                  logger.info("Running ffmpeg: %s", " ".join(cmd))
-                  result = subprocess.run(cmd, capture_output=True, text=True, timeout=840)
-
-                  if result.returncode != 0:
-                      logger.error("ffmpeg stderr: %s", result.stderr[-2000:])
-                      raise RuntimeError(f"ffmpeg failed with code {result.returncode}")
-
-                  preview_key = key.replace("originals/", "previews/", 1)
-                  preview_key = str(Path(preview_key).with_suffix(".webm"))
-
-                  logger.info("Uploading preview to s3://%s/%s", bucket, preview_key)
-                  s3.upload_file(
-                      output_path, bucket, preview_key,
-                      ExtraArgs={
-                          "ContentType": "video/webm",
-                          "Metadata": {
-                              "source-key": urllib.parse.quote(key, safe=""),
-                              "preview-quality": os.environ.get("PREVIEW_QUALITY", "720p"),
-                          },
-                      },
-                  )
-                  logger.info("Preview uploaded successfully.")
-
-
-
-
-          def probe_duration(file_path):
-              """Use ffprobe to get video duration in seconds."""
-              cmd = [
-                  FFPROBE, "-v", "quiet",
-                  "-print_format", "json", "-show_format",
-                  file_path,
-              ]
-              try:
-                  result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-                  if result.returncode != 0:
-                      logger.error("ffprobe failed: %s", result.stderr[-500:])
-                      return None
-                  data = json.loads(result.stdout)
-                  return float(data.get("format", {}).get("duration", 0))
-              except (subprocess.TimeoutExpired, json.JSONDecodeError, ValueError) as exc:
-                  logger.error("ffprobe error: %s", exc)
-                  return None
-
-
-          # =====================================================================
-          # Restore Completed — notify webhook + send email
-          # =====================================================================
-
-          def handle_restore_complete(bucket, key, record):
-              """POST to webhook + send SES email on Glacier restore completion."""
+          def handle_restore_complete(bucket, key):
               try:
                   head = s3.head_object(Bucket=bucket, Key=key)
                   metadata = head.get("Metadata", {})
@@ -501,70 +201,29 @@ Resources:
               except Exception as exc:
                   logger.error("Webhook POST failed: %s", exc)
 
-              if NOTIFICATION_EMAIL:
-                  try:
-                      file_name = Path(key).name
-                      ses.send_email(
-                          Source=NOTIFICATION_EMAIL,
-                          Destination={"ToAddresses": [NOTIFICATION_EMAIL]},
-                          Message={
-                              "Subject": {"Data": f"[taimumashin] Restore complete: {file_name}"},
-                              "Body": {"Text": {"Data": (
-                                  f"Your file has been restored from Glacier Deep Archive.\n\n"
-                                  f"File: {key}\nBucket: {bucket}\nExpires: {expires_at}\n\n"
-                                  f"You can now download this file from your taimumashin dashboard.\n"
-                              )}},
-                          },
-                      )
-                      logger.info("Notification email sent to %s", NOTIFICATION_EMAIL)
-                  except Exception as exc:
-                      logger.error("SES send failed: %s", exc)
-
-  # ---------------------------------------------------------------------------
-  # Lambda Invoke Permission — allow S3 to invoke the function
-  # ---------------------------------------------------------------------------
   LambdaInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName: !GetAtt PreviewLambda.Arn
+      FunctionName: !GetAtt RestoreNotifyLambda.Arn
       Action: "lambda:InvokeFunction"
       Principal: s3.amazonaws.com
       SourceAccount: !Ref "AWS::AccountId"
 
-  # ---------------------------------------------------------------------------
-  # Lambda Log Group — explicit retention to control costs
-  # ---------------------------------------------------------------------------
-  PreviewLambdaLogGroup:
+  RestoreNotifyLambdaLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/lambda/${PreviewLambda}"
+      LogGroupName: !Sub "/aws/lambda/${RestoreNotifyLambda}"
       RetentionInDays: 30
-      Tags:
-        - Key: Project
-          Value: taimumashin
 
-  # ---------------------------------------------------------------------------
-  # OIDC Provider — trusts JWTs signed by the taimumashin instance
-  # ---------------------------------------------------------------------------
   OidcProvider:
     Type: AWS::IAM::OIDCProvider
     Properties:
       Url: !Ref TaimumashinIssuerUrl
       ClientIdList:
         - "sts.amazonaws.com"
-      # AWS fetches the JWKS from TaimumashinIssuerUrl/.well-known/jwks.json
-      # and validates the TLS certificate automatically.
-      # ThumbprintList is required by CloudFormation but AWS ignores it for
-      # HTTPS issuers and validates the full certificate chain instead.
       ThumbprintList:
         - "0000000000000000000000000000000000000000"
-      Tags:
-        - Key: Project
-          Value: taimumashin
 
-  # ---------------------------------------------------------------------------
-  # IAM Role — browser assumes this via AssumeRoleWithWebIdentity (OIDC)
-  # ---------------------------------------------------------------------------
   TaimumashinBrowserRole:
     Type: AWS::IAM::Role
     Properties:
@@ -576,14 +235,12 @@ Resources:
             Principal:
               Federated: !GetAtt OidcProvider.Arn
             Action: "sts:AssumeRoleWithWebIdentity"
-            # Audience is already constrained by the OIDC provider's ClientIdList
       MaxSessionDuration: 3600
       Policies:
         - PolicyName: TaimumashinBucketAccess
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Object-level operations
               - Effect: Allow
                 Action:
                   - "s3:GetObject"
@@ -592,54 +249,27 @@ Resources:
                   - "s3:HeadObject"
                   - "s3:RestoreObject"
                 Resource: !Sub "arn:aws:s3:::${MediaBucket}/*"
-              # Bucket-level operations
               - Effect: Allow
                 Action:
                   - "s3:ListBucket"
                 Resource: !Sub "arn:aws:s3:::${MediaBucket}"
-      Tags:
-        - Key: Project
-          Value: taimumashin
 
-  # ---------------------------------------------------------------------------
-  # SES Email Identity — verify the notification email address
-  # ---------------------------------------------------------------------------
-  SesEmailIdentity:
-    Type: AWS::SES::EmailIdentity
-    Properties:
-      EmailIdentity: !Ref NotificationEmail
-
-# =============================================================================
-# Outputs — values the user pastes into their taimumashin dashboard
-# =============================================================================
 Outputs:
   RoleArn:
-    Description: >
-      ARN of the OIDC IAM role. Paste this into your taimumashin
-      dashboard during onboarding.
+    Description: ARN of the OIDC IAM role for browser-based S3 access.
     Value: !GetAtt TaimumashinBrowserRole.Arn
-    Export:
-      Name: !Sub "${AWS::StackName}-RoleArn"
 
   BucketName:
-    Description: >
-      Name of the S3 bucket created for your media. Paste this into your
-      taimumashin dashboard during onboarding.
+    Description: Name of the S3 bucket for your media.
     Value: !Ref MediaBucket
-    Export:
-      Name: !Sub "${AWS::StackName}-BucketName"
 
   Region:
-    Description: >
-      AWS region where this stack is deployed. Select the matching region
-      in your taimumashin dashboard during onboarding.
+    Description: AWS region where this stack is deployed.
     Value: !Ref "AWS::Region"
-    Export:
-      Name: !Sub "${AWS::StackName}-Region"
 
   LambdaFunctionArn:
-    Description: ARN of the preview generator Lambda function (for reference).
-    Value: !GetAtt PreviewLambda.Arn
+    Description: ARN of the restore notification Lambda (for reference).
+    Value: !GetAtt RestoreNotifyLambda.Arn
 
   BucketArn:
     Description: ARN of the media S3 bucket (for reference).

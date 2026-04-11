@@ -9,7 +9,7 @@ import { Github, Circle } from "lucide-react";
 export function Footer() {
   const { data: session } = useSession();
   const [region, setRegion] = useState<string | null>(null);
-  const onboarded = (session?.user as Record<string, unknown>)?.onboarded;
+  const onboarded = (session?.user as unknown as Record<string, unknown>)?.onboarded;
 
   useEffect(() => {
     if (onboarded) {
@@ -46,6 +46,7 @@ export function Footer() {
             <Link href="/about" className="hover:text-foreground transition-colors">About</Link>
             <Link href="/pricing" className="hover:text-foreground transition-colors">Pricing</Link>
             <Link href="/privacy" className="hover:text-foreground transition-colors">Privacy</Link>
+            <Link href="/changelog" className="hover:text-foreground transition-colors">Changelog</Link>
           </nav>
 
           {/* Right: copyright + github */}

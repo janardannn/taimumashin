@@ -4,6 +4,10 @@ import { getPrisma } from "@/lib/db";
 
 // DB-only: S3 marker object creation is handled client-side via useS3 hook
 export async function POST(req: Request) {
+  if (!req.headers.get("content-type")?.includes("application/json")) {
+    return NextResponse.json({ error: "Invalid Content-Type" }, { status: 415 });
+  }
+
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -16,8 +20,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Folder name required" }, { status: 400 });
   }
 
-  const decodedParent = parentPath ? decodeURIComponent(parentPath) : "";
-  const decodedName = decodeURIComponent(name);
+  let decodedParent: string;
+  let decodedName: string;
+  try {
+    decodedParent = parentPath ? decodeURIComponent(parentPath) : "";
+    decodedName = decodeURIComponent(name);
+  } catch {
+    return NextResponse.json({ error: "Invalid path encoding" }, { status: 400 });
+  }
   const folderPath = decodedParent ? `${decodedParent}/${decodedName}` : decodedName;
 
   try {

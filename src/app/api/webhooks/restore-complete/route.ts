@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getPrisma } from "@/lib/db";
+import { sendRestoreEmail } from "@/lib/email";
 
 // Called by Lambda in user's AWS account when S3 fires ObjectRestore:Completed
 export async function POST(req: Request) {
@@ -14,7 +15,7 @@ export async function POST(req: Request) {
   const prisma = await getPrisma();
 
   // Update the restore job
-  await prisma.restoreJob.updateMany({
+  const result = await prisma.restoreJob.updateMany({
     where: {
       userId,
       folderPath,
@@ -26,6 +27,30 @@ export async function POST(req: Request) {
       expiresAt: expiresAt ? new Date(expiresAt) : null,
     },
   });
+
+  // Send email notification from our side (bypasses SES sandbox)
+  if (result.count > 0) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { notificationEmail: true, email: true },
+    });
+    const to = user?.notificationEmail || user?.email;
+    if (to) {
+      const jobs = await prisma.restoreJob.findMany({
+        where: { userId, folderPath, status: "READY", restoredAt: { not: null } },
+        orderBy: { restoredAt: "desc" },
+        take: 1,
+        select: { fileCount: true, keys: true },
+      });
+      const fileCount = jobs[0]?.fileCount || 1;
+      const keys = Array.isArray(jobs[0]?.keys) ? jobs[0].keys as string[] : [];
+      try {
+        await sendRestoreEmail(to, folderPath, fileCount, keys, expiresAt);
+      } catch (err) {
+        console.error("Failed to send restore email:", err);
+      }
+    }
+  }
 
   return NextResponse.json({ success: true });
 }

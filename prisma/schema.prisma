@@ -123,6 +123,7 @@ model RestoreJob {
   id          String        @id @default(cuid())
   userId      String
   folderPath  String
+  keys          Json          @default("[]")
   tier          String?
   estimatedCost Float?
   status        RestoreStatus @default(PENDING)

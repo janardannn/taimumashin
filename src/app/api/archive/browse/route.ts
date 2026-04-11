@@ -9,7 +9,12 @@ export async function GET(req: NextRequest) {
   }
 
   const rawPath = req.nextUrl.searchParams.get("path") || "";
-  const decodedPath = decodeURIComponent(rawPath);
+  let decodedPath: string;
+  try {
+    decodedPath = decodeURIComponent(rawPath);
+  } catch {
+    return NextResponse.json({ error: "Invalid path encoding" }, { status: 400 });
+  }
   const isInstant = decodedPath === "instant" || decodedPath.startsWith("instant/");
 
   // Normalize to DB folder path
@@ -128,8 +133,8 @@ export async function GET(req: NextRequest) {
   const totalFiles = statsResult._count;
   const totalSize = Number(statsResult._sum.size || 0);
 
-  // 5. Restore status (reuse logic from /api/archive/status)
-  let restoreStatus = null;
+  // 5. Active restore jobs (all PENDING/RESTORING for this path and ancestors)
+  let restoreJobs: { id: string; status: string; requestedAt: string; fileCount: number; tier: string | null; keys: string[] }[] = [];
   if (!isInstant) {
     const statusPath = folderPath === "/" ? "/" : folderPath;
     const pathsToCheck = [statusPath];
@@ -139,23 +144,24 @@ export async function GET(req: NextRequest) {
     }
     if (statusPath !== "/") pathsToCheck.push("/");
 
-    const activeRestore = await prisma.restoreJob.findFirst({
+    const activeRestores = await prisma.restoreJob.findMany({
       where: {
         userId,
         folderPath: { in: pathsToCheck },
         status: { in: ["PENDING", "RESTORING"] },
       },
       orderBy: { requestedAt: "desc" },
-      select: { status: true, requestedAt: true, fileCount: true },
+      select: { id: true, status: true, requestedAt: true, fileCount: true, tier: true, keys: true },
     });
 
-    if (activeRestore) {
-      restoreStatus = {
-        status: activeRestore.status,
-        requestedAt: activeRestore.requestedAt.toISOString(),
-        fileCount: activeRestore.fileCount,
-      };
-    }
+    restoreJobs = activeRestores.map((r) => ({
+      id: r.id,
+      status: r.status,
+      requestedAt: r.requestedAt.toISOString(),
+      fileCount: r.fileCount,
+      tier: r.tier,
+      keys: Array.isArray(r.keys) ? r.keys as string[] : [],
+    }));
   }
 
   return NextResponse.json({
@@ -181,17 +187,13 @@ export async function GET(req: NextRequest) {
       archivedCount: isInstant ? 0 : totalFiles,
       availableCount: isInstant ? totalFiles : 0,
     },
-    restoreStatus,
+    restoreJobs,
     region: user?.region || "us-east-1",
   });
 
   } catch (err) {
     console.error("Browse API error:", err);
-    const message = err instanceof Error ? err.message : String(err);
-    const stack = err instanceof Error ? err.stack : undefined;
-    return NextResponse.json(
-      { error: message, stack },
-      { status: 500 }
-    );
+    const message = err instanceof Error ? err.message : "Internal server error";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

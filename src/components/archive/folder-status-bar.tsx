@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
-import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download, FolderPlus, Upload } from "lucide-react";
+import { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
+import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download, FolderPlus, Upload, FolderInput, ChevronDown, ChevronUp, Home, Pencil } from "lucide-react";
 import { formatFileSize } from "@/lib/file-utils";
 import { useS3 } from "@/hooks/use-s3";
+import { useOperations, type DeleteSelection } from "@/components/operation-provider";
 import { getRegionPricing, PRICING_DATE, type RestoreTier } from "@/lib/pricing";
 
 interface FolderStats {
@@ -12,22 +14,26 @@ interface FolderStats {
   availableCount: number;
 }
 
-interface RestoreStatus {
+interface RestoreJob {
+  id: string;
   status: string;
   requestedAt: string;
   fileCount: number;
+  tier: string | null;
+  keys: string[];
 }
 
 interface Selection {
   type: "file" | "folder";
   name: string;
   key: string; // S3 key for files, prefix for folders
+  size: number;
 }
 
 interface FolderStatusBarProps {
   folderPath: string;
   stats: FolderStats;
-  restoreStatus: RestoreStatus | null;
+  restoreJobs: RestoreJob[];
   selections: Selection[];
   onRestoreComplete: () => void;
   onDeleteComplete: () => void;
@@ -40,7 +46,7 @@ interface FolderStatusBarProps {
 export function FolderStatusBar({
   folderPath,
   stats,
-  restoreStatus,
+  restoreJobs,
   selections,
   onRestoreComplete,
   onDeleteComplete,
@@ -50,38 +56,21 @@ export function FolderStatusBar({
   region,
 }: FolderStatusBarProps) {
   const [restoring, setRestoring] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false);
+  const [showMoveModal, setShowMoveModal] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [showRenameModal, setShowRenameModal] = useState(false);
+  const [renameName, setRenameName] = useState("");
+  const [downloadCooldown, setDownloadCooldown] = useState(false);
+  const [showRestoreList, setShowRestoreList] = useState(false);
+  const [viewingJob, setViewingJob] = useState<RestoreJob | null>(null);
 
   const s3 = useS3();
+  const ops = useOperations();
 
   const { totalFiles, totalSize, availableCount } = stats;
   const sizeLabel = formatFileSize(totalSize);
-
-  // Helper: list all objects recursively under a prefix
-  async function listAllObjects(prefix: string) {
-    const allObjects: { Key: string; Size: number; StorageClass?: string }[] = [];
-    let continuationToken: string | undefined;
-
-    do {
-      const listing = await s3.listObjects(prefix, "", continuationToken);
-      for (const obj of listing.Contents || []) {
-        if (obj.Key && !obj.Key.endsWith("/")) {
-          allObjects.push({
-            Key: obj.Key,
-            Size: obj.Size || 0,
-            StorageClass: obj.StorageClass,
-          });
-        }
-      }
-      continuationToken = listing.NextContinuationToken;
-    } while (continuationToken);
-
-    return allObjects;
-  }
 
   // Helper: compute S3 prefix from folderPath
   function getS3Prefix(): string {
@@ -106,34 +95,51 @@ export function FolderStatusBar({
         return;
       }
 
-      const prefix = getS3Prefix();
-      const objects = await listAllObjects(prefix);
+      // If files are selected, restore only those. Otherwise restore the whole folder.
+      let keysToRestore: { Key: string; Size: number }[];
+
+      if (selections.length > 0) {
+        // Resolve selections — files are direct keys, folders need listing
+        keysToRestore = [];
+        for (const sel of selections) {
+          if (sel.type === "file") {
+            keysToRestore.push({ Key: sel.key, Size: sel.size });
+          } else {
+            const objects = await s3.listAllObjects(sel.key);
+            for (const obj of objects) {
+              keysToRestore.push({ Key: obj.Key, Size: obj.Size });
+            }
+          }
+        }
+      } else {
+        const prefix = getS3Prefix();
+        keysToRestore = (await s3.listAllObjects(prefix)).map((o) => ({ Key: o.Key, Size: o.Size }));
+      }
 
       let fileCount = 0;
       let totalSizeBytes = 0;
+      const restoredKeys: string[] = [];
 
-      // Issue restore requests directly from the client
-      for (const obj of objects) {
+      for (const obj of keysToRestore) {
         try {
           await s3.restoreObject(obj.Key, 7, tier);
           fileCount++;
           totalSizeBytes += obj.Size;
+          restoredKeys.push(obj.Key);
         } catch {
           // Already restoring, not in Glacier, or standard -- skip
         }
       }
 
-      // Only track in DB if at least one file actually needed restoring
       if (fileCount === 0) {
         setError("No files need restoring — they may still be in standard storage.");
         return;
       }
 
-      // Notify server for DB tracking only
       const res = await fetch("/api/archive/restore", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ folderPath, fileCount, totalSize: totalSizeBytes, tier: tier.toLowerCase(), estimatedCost }),
+        body: JSON.stringify({ folderPath, fileCount, totalSize: totalSizeBytes, tier: tier.toLowerCase(), estimatedCost, keys: restoredKeys }),
       });
 
       const data = await res.json();
@@ -150,109 +156,27 @@ export function FolderStatusBar({
     }
   }
 
-  async function handleDelete() {
-    if (selections.length === 0) return;
+  function handleDelete(items?: DeleteSelection[]) {
+    const toDelete = items || selections;
+    if (toDelete.length === 0) return;
     setShowDeleteConfirm(false);
-    setDeleting(true);
-    setError("");
-
-    try {
-      if (!s3.ready) {
-        setError("S3 credentials not ready yet");
-        return;
-      }
-
-      for (const sel of selections) {
-        if (sel.type === "file") {
-          await s3.deleteObject(sel.key);
-
-          if (sel.key.startsWith("originals/")) {
-            const previewKey = sel.key.replace(/^originals\//, "previews/");
-            try { await s3.deleteObject(previewKey); } catch { /* Preview might not exist */ }
-          }
-
-          const res = await fetch("/api/archive/delete", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key: sel.key }),
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            setError(data.error || "Delete tracking failed");
-            return;
-          }
-        } else {
-          const objects = await listAllObjects(sel.key);
-
-          for (const obj of objects) {
-            await s3.deleteObject(obj.Key);
-            if (obj.Key.startsWith("originals/")) {
-              const previewKey = obj.Key.replace(/^originals\//, "previews/");
-              try { await s3.deleteObject(previewKey); } catch { /* Preview might not exist */ }
-            }
-          }
-
-          const res = await fetch("/api/archive/delete", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prefix: sel.key }),
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            setError(data.error || "Delete tracking failed");
-            return;
-          }
-        }
-      }
-
-      onDeleteComplete();
-    } catch {
-      setError("Delete request failed.");
-    } finally {
-      setDeleting(false);
-    }
+    ops.startDelete(toDelete);
+    onDeleteComplete();
   }
 
-  async function handleDownloadAll() {
-    setDownloading(true);
-    setError("");
+  function handleDownloadSelected() {
+    if (downloadCooldown) return;
+    setDownloadCooldown(true);
+    setTimeout(() => setDownloadCooldown(false), 2000);
+    ops.startDownload(selections);
+  }
 
-    try {
-      if (!s3.ready) {
-        setError("S3 credentials not ready yet");
-        return;
-      }
-
-      const JSZip = (await import("jszip")).default;
-      const prefix = getS3Prefix();
-      const objects = await listAllObjects(prefix);
-
-      if (!objects.length) {
-        setError("No files to download");
-        return;
-      }
-
-      const zip = new JSZip();
-
-      for (const obj of objects) {
-        const url = await s3.getPresignedUrl(obj.Key);
-        const blob = await fetch(url).then((r) => r.blob());
-        const name = obj.Key.split("/").pop()!;
-        zip.file(name, blob);
-      }
-
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-      const url = URL.createObjectURL(zipBlob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${folderPath.split("/").pop() || "archive"}.zip`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      setError("Download failed.");
-    } finally {
-      setDownloading(false);
-    }
+  function handleDownloadAll() {
+    if (downloadCooldown) return;
+    setDownloadCooldown(true);
+    setTimeout(() => setDownloadCooldown(false), 2000);
+    const prefix = getS3Prefix();
+    ops.startDownload([{ type: "folder", name: folderPath.split("/").pop() || "archive", key: prefix }]);
   }
 
   // Archive status chip
@@ -268,36 +192,74 @@ export function FolderStatusBar({
       );
     }
 
-    if (restoreStatus && (restoreStatus.status === "PENDING" || restoreStatus.status === "RESTORING")) {
-      const timeAgo = getTimeAgo(new Date(restoreStatus.requestedAt));
-      return (
-        <div className="flex items-center gap-2 rounded-md bg-blue-50 px-3 py-1.5 dark:bg-blue-950/30">
-          <Pickaxe className="h-3.5 w-3.5 text-blue-600 animate-pulse" />
-          <span className="text-xs">
-            Thawing {restoreStatus.fileCount} file{restoreStatus.fileCount !== 1 ? "s" : ""} — {timeAgo}
-          </span>
-        </div>
-      );
-    }
-
     if (totalFiles === 0) return null;
 
+    const activeJobs = restoreJobs.filter((j) => j.status === "PENDING" || j.status === "RESTORING");
+    const hasSelection = selections.length > 0;
+    const selectedSize = hasSelection ? selections.reduce((sum, s) => sum + s.size, 0) : 0;
+
     return (
-      <div className="flex items-center gap-2">
-        <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-1.5">
-          <Snowflake className="h-3.5 w-3.5 text-blue-500" />
-          <span className="text-xs">
-            {totalFiles} file{totalFiles !== 1 ? "s" : ""} ({sizeLabel})
-          </span>
+      <div className="space-y-1">
+        <div className="flex items-center gap-2">
+          {/* Stats chip */}
+          <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-1.5">
+            <Snowflake className="h-3.5 w-3.5 text-blue-500" />
+            <span className="text-xs">
+              {hasSelection
+                ? `${selections.length} selected (${formatFileSize(selectedSize)})`
+                : `${totalFiles} file${totalFiles !== 1 ? "s" : ""} (${sizeLabel})`}
+            </span>
+          </div>
+
+          {/* Active restore status */}
+          {activeJobs.length === 1 && (
+            <button
+              onClick={() => setViewingJob(activeJobs[0])}
+              className="flex items-center gap-2 rounded-md bg-blue-50 px-3 py-1.5 dark:bg-blue-950/30 cursor-pointer hover:bg-blue-100 dark:hover:bg-blue-950/50 transition-colors"
+            >
+              <Pickaxe className="h-3.5 w-3.5 text-blue-600 animate-pulse" />
+              <span className="text-xs">
+                Restoring {activeJobs[0].fileCount} file{activeJobs[0].fileCount !== 1 ? "s" : ""}{activeJobs[0].tier ? ` (${activeJobs[0].tier})` : ""} — {getTimeAgo(new Date(activeJobs[0].requestedAt))}
+              </span>
+            </button>
+          )}
+          {activeJobs.length > 1 && (
+            <button
+              onClick={() => setShowRestoreList((v) => !v)}
+              className="flex items-center gap-2 rounded-md bg-blue-50 px-3 py-1.5 dark:bg-blue-950/30 cursor-pointer hover:bg-blue-100 dark:hover:bg-blue-950/50 transition-colors"
+            >
+              <Pickaxe className="h-3.5 w-3.5 text-blue-600 animate-pulse" />
+              <span className="text-xs">{activeJobs.length} active restores</span>
+              <ChevronDown className={`h-3 w-3 text-blue-600 transition-transform ${showRestoreList ? "rotate-180" : ""}`} />
+            </button>
+          )}
+
+          {/* Restore button — always visible */}
+          <button
+            onClick={() => setShowRestoreConfirm(true)}
+            disabled={restoring}
+            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-amber-500/15 px-2.5 text-xs font-medium text-amber-500 hover:bg-amber-500/25 active:scale-[0.97] cursor-pointer disabled:opacity-50 transition-all"
+          >
+            <Pickaxe className="h-3 w-3" />
+            {restoring ? "..." : hasSelection ? `Restore ${selections.length} file${selections.length !== 1 ? "s" : ""}` : "Restore"}
+          </button>
         </div>
-        <button
-          onClick={() => setShowRestoreConfirm(true)}
-          disabled={restoring}
-          className="inline-flex h-7 items-center gap-1.5 rounded-md bg-amber-500/15 px-2.5 text-xs font-medium text-amber-500 hover:bg-amber-500/25 disabled:opacity-50"
-        >
-          <Pickaxe className="h-3 w-3" />
-          {restoring ? "..." : "Restore"}
-        </button>
+
+        {/* Expanded job list */}
+        {showRestoreList && activeJobs.length > 1 && (
+          <div className="rounded-md border border-border bg-background p-2 space-y-1.5">
+            {activeJobs.map((job) => (
+              <button
+                key={job.id}
+                onClick={() => setViewingJob(job)}
+                className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground w-full rounded hover:bg-accent cursor-pointer transition-colors"
+              >
+                <Pickaxe className="h-3 w-3 text-blue-500 shrink-0" />
+                <span>{job.fileCount} file{job.fileCount !== 1 ? "s" : ""}{job.tier ? ` (${job.tier})` : ""} — {getTimeAgo(new Date(job.requestedAt))}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
@@ -310,7 +272,7 @@ export function FolderStatusBar({
         </div>
       )}
 
-      <div className="flex items-center justify-between px-4 py-2 border-t border-[var(--panel-border)]">
+      <div className="flex items-center justify-between px-4 py-2 shadow-[inset_0_1px_0_var(--panel-border)]">
         {/* Left: archive status */}
         <ArchiveChip />
 
@@ -318,24 +280,44 @@ export function FolderStatusBar({
         <div className="flex items-center gap-2">
           {selections.length > 0 ? (
             <>
-              <span className="inline-flex items-center gap-1.5 rounded-md bg-blue-500/10 ring-1 ring-blue-500/40 px-2.5 py-1 text-xs font-medium text-blue-700 dark:text-blue-300">
-                {selections.length === 1 ? (
-                  <>
-                    {selections[0].type === "folder" ? <Folder className="h-3 w-3 text-muted-foreground" /> : <FileIcon className="h-3 w-3 text-muted-foreground" />}
-                    <span className="max-w-[150px] truncate">{selections[0].name}</span>
-                  </>
-                ) : (
-                  <>{selections.length} items selected</>
-                )}
+              <span className="text-xs text-muted-foreground">
+                {selections.length} selected
               </span>
-              <button
-                onClick={() => setShowDeleteConfirm(true)}
-                disabled={deleting}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md bg-red-600 px-2.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50 transition-colors"
-              >
-                <Trash2 className="h-3 w-3" />
-                Delete
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  title="Delete"
+                  className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-red-500/10 text-red-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-red-500/15"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  onClick={handleDownloadSelected}
+                  title="Download"
+                  className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-emerald-500/10 text-emerald-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-emerald-500/15"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  onClick={() => setShowMoveModal(true)}
+                  title="Move"
+                  className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-blue-500/10 text-blue-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-blue-500/15"
+                >
+                  <FolderInput className="h-3.5 w-3.5" />
+                </button>
+                {selections.length === 1 && (
+                  <button
+                    onClick={() => {
+                      setRenameName(selections[0].name);
+                      setShowRenameModal(true);
+                    }}
+                    title="Rename"
+                    className="inline-flex items-center justify-center h-7 w-7 rounded-md bg-orange-500/10 text-orange-500 cursor-pointer active:scale-[0.97] transition-colors hover:bg-orange-500/15"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
               <div className="h-4 w-px bg-border" />
             </>
           ) : (
@@ -346,12 +328,11 @@ export function FolderStatusBar({
               {totalFiles > 0 && (availableCount > 0 || isInstant) && (
                 <button
                   onClick={handleDownloadAll}
-                  disabled={downloading}
-                  className="inline-flex h-6 items-center gap-1 rounded px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-50"
-                  title="Download all files as ZIP"
+                  className="inline-flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground active:scale-[0.97] cursor-pointer transition-all"
+                  title="Download all files"
                 >
                   <Download className="h-3 w-3" />
-                  {downloading ? "..." : "ZIP"}
+                  DL
                 </button>
               )}
               <div className="h-4 w-px bg-border" />
@@ -359,14 +340,14 @@ export function FolderStatusBar({
           )}
           <button
             onClick={onNewFolder}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-[var(--glass-border)] bg-[var(--glass-bg)] px-2.5 text-xs text-muted-foreground hover:bg-[var(--glass-hover)] hover:text-foreground transition-colors"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md border border-foreground/20 bg-foreground/10 px-2.5 text-xs font-medium text-foreground hover:bg-foreground/15 active:scale-[0.97] cursor-pointer transition-all"
           >
             <FolderPlus className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">New Folder</span>
           </button>
           <button
             onClick={onUpload}
-            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
+            className="inline-flex h-7 items-center gap-1.5 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 active:scale-[0.97] cursor-pointer transition-all"
           >
             <Upload className="h-3.5 w-3.5" />
             <span className="hidden sm:inline">Upload</span>
@@ -374,25 +355,109 @@ export function FolderStatusBar({
         </div>
       </div>
 
+      {typeof document !== "undefined" && createPortal(
+        <>
       {/* Restore confirm modal */}
-      {showRestoreConfirm && (
-        <RestoreConfirmModal
-          fileCount={totalFiles}
-          totalSizeBytes={totalSize}
-          size={sizeLabel}
-          region={region}
-          onConfirm={handleRestore}
-          onCancel={() => setShowRestoreConfirm(false)}
-        />
-      )}
+      {showRestoreConfirm && (() => {
+        const hasSelection = selections.length > 0;
+        const selSize = hasSelection ? selections.reduce((sum, s) => sum + s.size, 0) : totalSize;
+        const selCount = hasSelection ? selections.length : totalFiles;
+        return (
+          <RestoreConfirmModal
+            fileCount={selCount}
+            totalSizeBytes={selSize}
+            size={formatFileSize(selSize)}
+            region={region}
+            onConfirm={handleRestore}
+            onCancel={() => setShowRestoreConfirm(false)}
+          />
+        );
+      })()}
 
       {/* Delete confirm modal */}
       {showDeleteConfirm && selections.length > 0 && (
         <DeleteConfirmModal
           selections={selections}
-          onConfirm={handleDelete}
+          onConfirm={(items) => handleDelete(items)}
           onCancel={() => setShowDeleteConfirm(false)}
         />
+      )}
+
+      {/* Restore job detail modal */}
+      {viewingJob && (
+        <RestoreJobDetailModal
+          job={viewingJob}
+          onClose={() => setViewingJob(null)}
+        />
+      )}
+
+      {showMoveModal && selections.length > 0 && (
+        <MoveModal
+          selections={selections}
+          currentPath={folderPath}
+          onMove={(dest) => {
+            setShowMoveModal(false);
+            ops.startMove(selections, dest);
+            onDeleteComplete(); // clears selection
+          }}
+          onCancel={() => setShowMoveModal(false)}
+        />
+      )}
+
+      {showRenameModal && selections.length === 1 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowRenameModal(false)}>
+          <div className="w-full max-w-sm rounded-lg border border-border bg-background p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">Rename</h2>
+              <button onClick={() => setShowRenameModal(false)} className="flex h-7 w-7 items-center justify-center rounded-md bg-muted-foreground/15 text-muted-foreground hover:bg-muted-foreground/30 hover:text-foreground cursor-pointer transition-colors">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              const trimmed = renameName.trim();
+              if (trimmed && trimmed !== selections[0].name) {
+                setShowRenameModal(false);
+                ops.startMove(
+                  [{ ...selections[0], name: trimmed }],
+                  folderPath || "/"
+                );
+                onDeleteComplete();
+              }
+            }} className="space-y-4">
+              <input
+                type="text"
+                value={renameName}
+                onChange={(e) => setRenameName(e.target.value)}
+                autoFocus
+                onFocus={(e) => {
+                  const dot = renameName.lastIndexOf(".");
+                  if (dot > 0) e.target.setSelectionRange(0, dot);
+                }}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              <div className="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowRenameModal(false)}
+                  className="rounded-md px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-accent cursor-pointer transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!renameName.trim() || renameName.trim() === selections[0].name}
+                  className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 active:scale-[0.98] cursor-pointer disabled:opacity-50 transition-all"
+                >
+                  Rename
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+        </>,
+        document.body
       )}
     </>
   );
@@ -484,7 +549,7 @@ function RestoreConfirmModal({
         <div className="flex gap-2">
           <button
             onClick={onCancel}
-            className="flex-1 rounded-md border py-2 text-sm font-medium hover:bg-accent"
+            className="flex-1 rounded-md border py-2 text-sm font-medium hover:bg-accent active:scale-[0.98] cursor-pointer transition-all"
           >
             Cancel
           </button>
@@ -494,7 +559,7 @@ function RestoreConfirmModal({
               const cost = sizeGb * tier.perGB + (fileCount / 1000) * tier.perRequest;
               onConfirm(selectedTier.charAt(0).toUpperCase() + selectedTier.slice(1) as "Expedited" | "Standard" | "Bulk", cost);
             }}
-            className="flex-1 rounded-md bg-amber-500 py-2 text-sm font-medium text-white hover:bg-amber-600"
+            className="flex-1 rounded-md bg-amber-500 py-2 text-sm font-medium text-white hover:bg-amber-600 active:scale-[0.98] cursor-pointer transition-all"
           >
             <span className="flex items-center justify-center gap-1.5">
               <Pickaxe className="h-3.5 w-3.5" />
@@ -508,26 +573,36 @@ function RestoreConfirmModal({
 }
 
 function DeleteConfirmModal({
-  selections,
+  selections: initialSelections,
   onConfirm,
   onCancel,
 }: {
   selections: Selection[];
-  onConfirm: () => void;
+  onConfirm: (items: Selection[]) => void;
   onCancel: () => void;
 }) {
-  const count = selections.length;
+  const [items, setItems] = useState(initialSelections);
+  const count = items.length;
   const isSingle = count === 1;
-  const folderCount = selections.filter(s => s.type === "folder").length;
+  const folderCount = items.filter(s => s.type === "folder").length;
   const fileCount = count - folderCount;
 
   const itemLabel = isSingle
-    ? selections[0].type === "folder" ? "Folder" : "File"
+    ? items[0].type === "folder" ? "Folder" : "File"
     : `${count} Items`;
 
   const description = isSingle
-    ? <>Permanently delete <span className="font-medium">{selections[0].name}</span>{selections[0].type === "folder" ? " and all its contents" : ""}?</>
+    ? <>Permanently delete <span className="font-medium">{items[0].name}</span>{items[0].type === "folder" ? " and all its contents" : ""}?</>
     : <>Permanently delete <span className="font-medium">{fileCount > 0 ? `${fileCount} file${fileCount !== 1 ? "s" : ""}` : ""}{fileCount > 0 && folderCount > 0 ? " and " : ""}{folderCount > 0 ? `${folderCount} folder${folderCount !== 1 ? "s" : ""}` : ""}</span>?</>;
+
+  function removeItem(key: string) {
+    const next = items.filter(s => s.key !== key);
+    if (next.length === 0) {
+      onCancel();
+    } else {
+      setItems(next);
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onCancel}>
@@ -542,34 +617,48 @@ function DeleteConfirmModal({
         <div className="space-y-4 mb-8">
           <p className="text-sm">{description}</p>
           {!isSingle && (
-            <ul className="max-h-48 overflow-auto rounded-lg bg-muted/50 px-4 py-3 space-y-2.5">
-              {selections.map((s) => (
+            <ul className="max-h-48 overflow-y-scroll rounded-lg bg-muted/50 px-4 py-3 space-y-2.5 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20">
+              {items.map((s) => (
                 <li key={s.key} className="flex items-center gap-1.5 text-xs text-muted-foreground" title={s.name}>
                   {s.type === "folder" ? (
                     <Folder className="h-3 w-3 shrink-0" />
                   ) : (
                     <FileIcon className="h-3 w-3 shrink-0" />
                   )}
-                  <span className="truncate">{s.name}</span>
+                  <span className="flex-1 truncate">{s.name}</span>
+                  <button
+                    onClick={() => removeItem(s.key)}
+                    className="flex h-5 w-5 items-center justify-center rounded text-muted-foreground/50 hover:bg-muted-foreground/15 hover:text-foreground cursor-pointer transition-colors shrink-0"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
                 </li>
               ))}
             </ul>
           )}
+          {isSingle && (
+            <div className="rounded-lg bg-muted/50 px-4 py-3">
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                {items[0].type === "folder" ? <Folder className="h-3 w-3 shrink-0" /> : <FileIcon className="h-3 w-3 shrink-0" />}
+                <span className="truncate">{items[0].name}</span>
+              </div>
+            </div>
+          )}
           <div className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 dark:bg-red-950/30 dark:text-red-300">
-            <p>This action cannot be undone. {isSingle ? `The ${selections[0].type}` : "These items"} will be removed from S3 permanently.</p>
+            <p>This action cannot be undone. {isSingle ? `The ${items[0].type}` : "These items"} will be removed from S3 permanently.</p>
           </div>
         </div>
 
         <div className="flex gap-3">
           <button
             onClick={onCancel}
-            className="flex-1 rounded-lg border py-2.5 text-sm font-medium hover:bg-accent transition-colors cursor-pointer"
+            className="flex-1 rounded-md border py-2 text-sm font-medium hover:bg-accent active:scale-[0.98] cursor-pointer transition-all"
           >
             Cancel
           </button>
           <button
-            onClick={onConfirm}
-            className="flex-1 rounded-lg bg-red-600 py-2.5 text-sm font-medium text-white hover:bg-red-700 transition-colors cursor-pointer"
+            onClick={() => onConfirm(items)}
+            className="flex-1 rounded-md bg-red-600 py-2 text-sm font-medium text-white hover:bg-red-700 active:scale-[0.98] cursor-pointer transition-all"
           >
             <span className="flex items-center justify-center gap-1.5">
               <Trash2 className="h-3.5 w-3.5" />
@@ -577,6 +666,167 @@ function DeleteConfirmModal({
             </span>
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function MoveModal({
+  selections,
+  currentPath,
+  onMove,
+  onCancel,
+}: {
+  selections: Selection[];
+  currentPath: string;
+  onMove: (destFolderPath: string) => void;
+  onCancel: () => void;
+}) {
+  const [browsePath, setBrowsePath] = useState("/");
+  const [folders, setFolders] = useState<{ name: string; path: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/api/archive/browse?path=${encodeURIComponent(browsePath === "/" ? "" : browsePath)}`)
+      .then((r) => r.json())
+      .then((data) => {
+        setFolders(
+          (data.folders || []).map((f: { name: string; path: string }) => ({
+            name: f.name,
+            path: f.path,
+          }))
+        );
+      })
+      .catch(() => setFolders([]))
+      .finally(() => setLoading(false));
+  }, [browsePath]);
+
+  const isCurrentPath = browsePath === (currentPath || "/");
+  const parentPath = browsePath === "/"
+    ? null
+    : browsePath.includes("/")
+      ? browsePath.split("/").slice(0, -1).join("/") || "/"
+      : "/";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onCancel}>
+      <div className="w-full max-w-md rounded-xl border border-border bg-background p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-base font-semibold">Move {selections.length} item{selections.length !== 1 ? "s" : ""}</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">Select destination folder</p>
+          </div>
+          <button onClick={onCancel} className="flex h-7 w-7 items-center justify-center rounded-md bg-muted-foreground/15 text-muted-foreground hover:bg-muted-foreground/30 hover:text-foreground cursor-pointer transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {/* Current browse path */}
+        <div className="flex items-center gap-1.5 mb-3 px-2 py-1.5 rounded-md bg-muted/50 text-xs text-muted-foreground">
+          <Folder className="h-3 w-3 shrink-0" />
+          <span className="truncate">{browsePath === "/" ? "/ (root)" : browsePath}</span>
+        </div>
+
+        {/* Navigation */}
+        <div className="rounded-lg border max-h-56 overflow-y-auto [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20">
+          {/* Navigation row */}
+          {(parentPath !== null || browsePath !== "/") && (
+            <div className="flex items-center border-b border-border/50">
+              {parentPath !== null && (
+                <button
+                  onClick={() => setBrowsePath(parentPath)}
+                  className="flex items-center justify-center h-9 w-9 hover:bg-accent cursor-pointer transition-colors"
+                  title="Up one level"
+                >
+                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                </button>
+              )}
+              {browsePath !== "/" && (
+                <button
+                  onClick={() => setBrowsePath("/")}
+                  className="flex items-center justify-center h-9 w-9 hover:bg-accent cursor-pointer transition-colors"
+                  title="Go to root"
+                >
+                  <Home className="h-3.5 w-3.5 text-muted-foreground" />
+                </button>
+              )}
+            </div>
+          )}
+
+          {loading ? (
+            <div className="px-3 py-4 text-center text-xs text-muted-foreground">Loading...</div>
+          ) : folders.length === 0 ? (
+            <div className="px-3 py-4 text-center text-xs text-muted-foreground">No subfolders</div>
+          ) : (
+            folders.map((f) => (
+              <button
+                key={f.path}
+                onClick={() => setBrowsePath(f.path)}
+                className="flex items-center gap-2 w-full px-3 py-2.5 text-xs hover:bg-accent cursor-pointer transition-colors"
+              >
+                <Folder className="h-3.5 w-3.5 text-blue-500" />
+                <span>{f.name}</span>
+              </button>
+            ))
+          )}
+        </div>
+
+        <div className="flex gap-2 mt-4">
+          <button
+            onClick={onCancel}
+            className="flex-1 rounded-md border py-2 text-sm font-medium hover:bg-accent active:scale-[0.98] cursor-pointer transition-all"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onMove(browsePath)}
+            disabled={isCurrentPath}
+            className="flex-1 rounded-md bg-blue-500 py-2 text-sm font-medium text-white hover:bg-blue-600 active:scale-[0.98] cursor-pointer disabled:opacity-50 transition-all"
+          >
+            <span className="flex items-center justify-center gap-1.5">
+              <FolderInput className="h-3.5 w-3.5" />
+              Move here
+            </span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RestoreJobDetailModal({ job, onClose }: { job: RestoreJob; onClose: () => void }) {
+  const timeAgo = getTimeAgo(new Date(job.requestedAt));
+  const keys = Array.isArray(job.keys) ? job.keys as string[] : [];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="w-full max-w-lg rounded-xl border border-border bg-background p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-base font-semibold">Restore Job</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {job.fileCount} file{job.fileCount !== 1 ? "s" : ""}{job.tier ? ` · ${job.tier}` : ""} · {timeAgo}
+            </p>
+          </div>
+          <button onClick={onClose} className="flex h-7 w-7 items-center justify-center rounded-md bg-muted-foreground/15 text-muted-foreground hover:bg-muted-foreground/30 hover:text-foreground cursor-pointer transition-colors">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        {keys.length > 0 ? (
+          <ul className="max-h-64 overflow-y-scroll rounded-lg bg-muted/50 px-4 py-3 space-y-2 [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-muted-foreground/20">
+            {keys.map((key) => (
+              <li key={key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <FileIcon className="h-3 w-3 shrink-0" />
+                <span className="truncate">{key.split("/").pop()}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted-foreground">No file details available for this job.</p>
+        )}
+
       </div>
     </div>
   );

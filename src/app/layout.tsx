@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Sora, Geist_Mono } from "next/font/google";
 import { SessionProvider } from "@/components/session-provider";
 import { ThemeProvider } from "next-themes";
+import { ToastProvider } from "@/components/toast";
+import { OperationProvider } from "@/components/operation-provider";
 import "./globals.css";
 
 const sora = Sora({
@@ -29,7 +31,11 @@ export default function RootLayout({
       <body className={`${sora.variable} ${geistMono.variable} font-sans antialiased`}>
         <ThemeProvider attribute="class" defaultTheme="light" disableTransitionOnChange>
           <SessionProvider>
-            {children}
+            <ToastProvider>
+              <OperationProvider>
+                {children}
+              </OperationProvider>
+            </ToastProvider>
           </SessionProvider>
         </ThemeProvider>
       </body>

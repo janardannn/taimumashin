@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
-import { S3Client, ListObjectsV2Command, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand, RestoreObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, ListObjectsV2Command, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand, RestoreObjectCommand, CopyObjectCommand } from "@aws-sdk/client-s3";
 import { STSClient, AssumeRoleWithWebIdentityCommand } from "@aws-sdk/client-sts";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
@@ -19,7 +19,7 @@ interface S3Config {
   jwt: string;
 }
 
-export function useS3() {
+export function useS3({ lazy = false }: { lazy?: boolean } = {}) {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const configRef = useRef<S3Config | null>(null);
@@ -110,13 +110,14 @@ export function useS3() {
     return { client, bucket: config.bucketName };
   }, [ensureCredentials]);
 
-  // Initialize on mount
+  // Initialize on mount (skip in lazy mode — credentials fetched on first operation)
   useEffect(() => {
+    if (lazy) return;
     fetchConfig()
       .then((config) => assumeRole(config))
       .then(() => setReady(true))
       .catch((err) => setError(err.message));
-  }, [fetchConfig, assumeRole]);
+  }, [lazy, fetchConfig, assumeRole]);
 
   // --- S3 Operations ---
 
@@ -160,9 +161,16 @@ export function useS3() {
   );
 
   const getPresignedUrl = useCallback(
-    async (key: string, expiresIn = 3600) => {
+    async (key: string, expiresIn = 3600, download?: string) => {
       const { client, bucket } = await getClient();
-      return getSignedUrl(client, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn });
+      // Strip non-ASCII from Content-Disposition filename to avoid S3 400
+      const safeDownload = download?.replace(/[^\x20-\x7E]/g, "_");
+      const command = new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        ...(safeDownload ? { ResponseContentDisposition: `attachment; filename="${safeDownload}"` } : {}),
+      });
+      return getSignedUrl(client, command, { expiresIn });
     },
     [getClient]
   );
@@ -175,6 +183,18 @@ export function useS3() {
         new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: contentType, Metadata: metadata }),
         { expiresIn }
       );
+    },
+    [getClient]
+  );
+
+  const copyObject = useCallback(
+    async (sourceKey: string, destKey: string) => {
+      const { client, bucket } = await getClient();
+      return client.send(new CopyObjectCommand({
+        Bucket: bucket,
+        CopySource: encodeURI(`${bucket}/${sourceKey}`),
+        Key: destKey,
+      }));
     },
     [getClient]
   );
@@ -201,14 +221,34 @@ export function useS3() {
     [getClient]
   );
 
+  const listAllObjects = useCallback(
+    async (prefix: string) => {
+      const allObjects: { Key: string; Size: number; StorageClass?: string }[] = [];
+      let continuationToken: string | undefined;
+      do {
+        const listing = await listObjects(prefix, "", continuationToken);
+        for (const obj of listing.Contents || []) {
+          if (obj.Key && !obj.Key.endsWith("/")) {
+            allObjects.push({ Key: obj.Key, Size: obj.Size || 0, StorageClass: obj.StorageClass });
+          }
+        }
+        continuationToken = listing.NextContinuationToken;
+      } while (continuationToken);
+      return allObjects;
+    },
+    [listObjects]
+  );
+
   return {
     ready,
     error,
     listObjects,
+    listAllObjects,
     headObject,
     putObject,
     getPresignedUrl,
     getPresignedPutUrl,
+    copyObject,
     deleteObject,
     restoreObject,
     ensureCredentials,
