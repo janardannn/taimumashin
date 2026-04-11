@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { Snowflake, Pickaxe, Zap, Trash2, Folder, FileIcon, X, Download, FolderPlus, Upload, FolderInput, ChevronDown, ChevronUp, Home, Pencil } from "lucide-react";
 import { formatFileSize } from "@/lib/file-utils";
 import { useS3 } from "@/hooks/use-s3";
@@ -354,6 +355,8 @@ export function FolderStatusBar({
         </div>
       </div>
 
+      {typeof document !== "undefined" && createPortal(
+        <>
       {/* Restore confirm modal */}
       {showRestoreConfirm && (() => {
         const hasSelection = selections.length > 0;
@@ -452,6 +455,9 @@ export function FolderStatusBar({
             </form>
           </div>
         </div>
+      )}
+        </>,
+        document.body
       )}
     </>
   );
